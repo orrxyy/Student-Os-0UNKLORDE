@@ -1,4 +1,4 @@
-import React, { createElement, createContext, useContext, useEffect, useState } from 'react'
+import React, { createElement, createContext, useContext, useEffect, useRef, useState } from 'react'
 import type { CvEntry, CvProfile, PortfolioItem, Certificate, Assignment, Submission, Attachment, AppState, Course, GradeComponent, Material, MaterialType, Note, PortfolioEntry, Task, ClassSchedule, CourseStatus } from '../types'
 import { initialState, uid } from '../data/mock'
 import { defaultGradingScale } from '../data/mock'
@@ -6,6 +6,7 @@ import { stampCourse } from './stamp'
 import { applyScheduleSeed } from '../data/schedule'
 import { fileStorage } from './attachmentStorage'
 import { legacyEntryToItem, legacyCategoryToType } from './portfolio'
+import { pullCourses, pushCourse, deleteRemoteCourse, courseSig } from './coursesRemote'
 
 const STORAGE_KEY = 'student-os-v2'
 
@@ -151,6 +152,74 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     saveState(state)
   }, [state])
+
+  // Courses + grade components live in Supabase; localStorage keeps a full local cache and everything else.
+  const sigs = useRef(new Map<string, string>())
+  const queue = useRef<Promise<void>>(Promise.resolve())
+  const pending = useRef(new Set<string>())
+  const [remoteReady, setRemoteReady] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const attempt = (n: number) => {
+      pullCourses()
+        .then((remote) => {
+          if (!alive) return
+          const byId = new Map(remote.map((r) => [r.id, r]))
+          setState((prev) => {
+            const next = {
+              ...prev,
+              academicYears: prev.academicYears.map((y) => ({
+                ...y,
+                semesters: y.semesters.map((sem) => ({
+                  ...sem,
+                  courses: sem.courses.map((c) => {
+                    const r = byId.get(c.id)
+                    return r ? { ...c, ...r } : c
+                  }),
+                })) as typeof y.semesters,
+              })),
+            }
+            for (const y of next.academicYears) for (const sem of y.semesters) for (const c of sem.courses) {
+              if (byId.has(c.id)) sigs.current.set(c.id, courseSig(c))
+            }
+            return next
+          })
+          setRemoteReady(true)
+        })
+        .catch((e) => {
+          console.warn('[supabase] courses unavailable, using local data (retrying)', e)
+          if (alive && n < 6) timer = setTimeout(() => attempt(n + 1), Math.min(2000 * 2 ** n, 30000))
+        })
+    }
+    attempt(0)
+    return () => { alive = false; clearTimeout(timer) }
+  }, [])
+
+  useEffect(() => {
+    if (!remoteReady) return
+    const all = state.academicYears.flatMap((y) => y.semesters.flatMap((s) => s.courses))
+    const live = new Set(all.map((c) => c.id))
+    for (const c of all) {
+      const sig = courseSig(c)
+      const pk = c.id + sig
+      if (sigs.current.get(c.id) === sig || pending.current.has(pk)) continue
+      pending.current.add(pk)
+      queue.current = queue.current.then(() =>
+        pushCourse(c)
+          .then(() => { sigs.current.set(c.id, sig) })
+          .catch((e) => console.warn('[supabase] push failed, will retry', e))
+          .finally(() => pending.current.delete(pk)),
+      )
+    }
+    for (const id of [...sigs.current.keys()]) {
+      if (live.has(id)) continue
+      queue.current = queue.current.then(() =>
+        deleteRemoteCourse(id).then(() => { sigs.current.delete(id) }).catch((e) => console.warn('[supabase] delete failed, will retry', e)),
+      )
+    }
+  }, [state, remoteReady])
 
   function addAssignment(courseId: string, data: AssignmentInput): Assignment {
     const now = new Date().toISOString()
