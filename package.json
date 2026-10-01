@@ -13,7 +13,8 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router": "^8.4.0",
-    "recharts": "^3.10.1"
+    "recharts": "^3.10.1",
+    "@supabase/supabase-js": "^2.49.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0",
@@ -28,10 +29,6 @@
   },
   "description": "",
   "main": "index.js",
-  "repository": {
-    "type": "git",
-    "url": "https://api.figma.com/git/make/file/2402271377294944215/public/code/6793a1e9-a49f-4004-8ba8-79fce500276e.git"
-  },
   "keywords": [],
   "author": "",
   "license": "ISC"
