@@ -1,0 +1,138 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Serif:ital,wght@0,400;0,600;0,700;1,400;1,600&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&family=DM+Mono:wght@400;500&display=swap');
+@import 'tailwindcss';
+
+/* Register dark variant tied to [data-theme="dark"] so dark: classes work */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+@theme {
+  --font-display: 'Noto Serif', Georgia, serif;
+  --font-sans: 'DM Sans', system-ui, sans-serif;
+  --font-mono: 'DM Mono', ui-monospace, monospace;
+
+  /* Light / Shu palette (default) */
+  --color-background: #F4EFE5;
+  --color-foreground: #1A1A2E;
+  --color-card: #FDFAF5;
+  --color-card-foreground: #1A1A2E;
+  --color-primary: #556B50;
+  --color-primary-foreground: #FDFAF5;
+  --color-secondary: #1E2D6B;
+  --color-secondary-foreground: #E8E4D8;
+  --color-accent: #C4920A;
+  --color-accent-foreground: #1A1A2E;
+  --color-muted: #EAE4D8;
+  --color-muted-foreground: #6E6E80;
+  --color-border: #D5CBBA;
+  --color-ring: #7C6FD4;
+  --color-sage-light: #E4EDE0;
+  --color-gold-light: #FBF3E1;
+  --color-indigo-light: #E8EAF6;
+  --color-silver-wolf: #7C6FD4;
+  --color-destructive: #B84040;
+  --color-destructive-foreground: #FDFAF5;
+  --color-success: #3A7050;
+  --color-success-foreground: #FDFAF5;
+
+  --radius-sm: 2px;
+  --radius: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+}
+
+/* ── Dark / Silver Wolf theme ── */
+[data-theme="dark"] {
+  --color-background: #0D0D1A;
+  --color-foreground: #DEDAD8;
+  --color-card: #14142A;
+  --color-card-foreground: #DEDAD8;
+  --color-primary: #9480E4;
+  --color-primary-foreground: #0D0D1A;
+  --color-secondary: #1A0A38;
+  --color-secondary-foreground: #E4E0F8;
+  --color-accent: #D055A8;
+  --color-accent-foreground: #FDFAF5;
+  --color-muted: #1C1C38;
+  --color-muted-foreground: #6A6A90;
+  --color-border: #272748;
+  --color-ring: #9480E4;
+  --color-sage-light: #1C1C38;
+  --color-gold-light: #1E1538;
+  --color-indigo-light: #1A1545;
+  --color-silver-wolf: #9480E4;
+  --color-destructive: #E05050;
+  --color-destructive-foreground: #FDFAF5;
+  --color-success: #42886A;
+  --color-success-foreground: #FDFAF5;
+}
+
+html {
+  font-family: var(--font-sans);
+}
+
+body {
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+  margin: 0;
+  min-height: 100vh;
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--color-border);
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-muted-foreground);
+}
+
+*:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
+
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  opacity: 0.4;
+}
+
+/* Theme-switch transition: briefly applied via JS to animate token changes */
+html.theme-switching,
+html.theme-switching *,
+html.theme-switching *::before,
+html.theme-switching *::after {
+  transition: color 180ms ease, background-color 220ms ease, border-color 180ms ease !important;
+}
+
+/* Smooth page transitions */
+main > * {
+  animation: page-in 0.18s ease-out backwards;
+}
+
+@keyframes page-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Card hover elevation */
+.card-hover {
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+.card-hover:hover {
+  box-shadow: 0 4px 16px rgba(26, 26, 46, 0.08);
+  transform: translateY(-1px);
+}
+
+/* Recharts axis text */
+.recharts-cartesian-axis-tick-value {
+  font-family: var(--font-mono);
+}
