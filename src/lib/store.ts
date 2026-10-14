@@ -8,6 +8,11 @@ import { fileStorage } from './attachmentStorage'
 import { legacyEntryToItem, legacyCategoryToType } from './portfolio'
 import { pullCourses, pushCourse, deleteRemoteCourse, courseSig } from './coursesRemote'
 import { fetchSemesters } from './semesterRemote'
+import {
+  deleteRemoteAssignment,
+  fetchAssignments,
+  saveRemoteAssignment,
+} from './assignmentsRemote'
 
 const STORAGE_KEY = 'student-os-v2'
 
@@ -154,6 +159,24 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     saveState(state)
   }, [state])
 
+  function mergeAssignments(
+  local: Assignment[],
+  remote: Assignment[],
+): Assignment[] {
+  const byId = new Map(local.map((assignment) => [assignment.id, assignment]))
+
+  for (const remoteAssignment of remote) {
+    const localAssignment = byId.get(remoteAssignment.id)
+    byId.set(
+      remoteAssignment.id,
+      localAssignment
+        ? { ...localAssignment, ...remoteAssignment }
+        : remoteAssignment,
+    )
+  }
+
+  return [...byId.values()]
+}
     // Read fixed semester metadata from Supabase; keep the local fallback and course data.
   useEffect(() => {
     let alive = true
