@@ -13,6 +13,11 @@ import {
   fetchAssignments,
   saveRemoteAssignment,
 } from './assignmentsRemote'
+import {
+  deleteRemoteTask,
+  fetchTasks,
+  saveRemoteTask,
+} from './tasksRemote'
 
 const STORAGE_KEY = 'student-os-v2'
 
@@ -247,6 +252,65 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       alive = false
     }
   }, [])
+
+    // Read tasks from Supabase and merge them with local tasks.
+  useEffect(() => {
+    let alive = true
+
+    fetchTasks()
+      .then((remote) => {
+        if (!alive || remote.length === 0) return
+
+        const mergeTasks = (local: Task[], incoming: Task[]) => {
+          const byId = new Map(local.map((task) => [task.id, task]))
+          for (const task of incoming) {
+            byId.set(task.id, { ...byId.get(task.id), ...task })
+          }
+          return [...byId.values()]
+        }
+
+        setState((prev) => ({
+          ...prev,
+          globalTasks: mergeTasks(
+            prev.globalTasks,
+            remote.filter((task) => !task.courseId),
+          ),
+          academicYears: prev.academicYears.map((year) => ({
+            ...year,
+            semesters: year.semesters.map((semester) => ({
+              ...semester,
+              courses: semester.courses.map((course) => {
+                const courseTasks = remote.filter(
+                  (task) => task.courseId === course.id,
+                )
+                const taskIdByAssignment = new Map<string, string>(
+                  courseTasks
+                    .filter((task) => task.assignmentId)
+                    .map((task) => [task.assignmentId!, task.id] as const),
+                )
+
+                return {
+                  ...course,
+                  tasks: mergeTasks(course.tasks, courseTasks),
+                  assignments: (course.assignments ?? []).map((assignment) => ({
+                    ...assignment,
+                    taskId:
+                      taskIdByAssignment.get(assignment.id) ?? assignment.taskId,
+                  })),
+                }
+              }),
+            })) as typeof year.semesters,
+          })),
+        }))
+      })
+      .catch((error) => {
+        console.warn('[supabase] tasks unavailable, using local data', error)
+      })
+
+    return () => {
+      alive = false
+    }
+  }, [])
   // Courses + grade components live in Supabase; localStorage keeps a full local cache and everything else.
   const sigs = useRef(new Map<string, string>())
   const queue = useRef<Promise<void>>(Promise.resolve())
@@ -383,29 +447,48 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       console.warn('[supabase] assignment update failed', error)
     })
   }
-  function createAssignmentTask(courseId: string, assignmentId: string) {
-    mutateCourse(courseId, (c) => {
-      const a = (c.assignments ?? []).find((x) => x.id === assignmentId)
-      if (!a || (a.taskId && c.tasks.some((t) => t.id === a.taskId))) return c
-      const task: Task = {
-        id: uid(),
-        courseId,
-        semesterId: c.semesterId,
-        title: a.title,
-        description: a.description,
-        type: 'assignment',
-        assessmentId: a.assessmentId,
-        assignmentId: a.id,
-        dueDate: a.dueDate,
-        completed: a.status === 'completed' || a.status === 'graded',
-        priority: a.priority ?? 'medium',
-        difficulty: 'medium',
-      }
-      return {
-        ...c,
-        tasks: [...c.tasks, task],
-        assignments: c.assignments.map((x) => (x.id === a.id ? { ...x, taskId: task.id, updatedAt: new Date().toISOString() } : x)),
-      }
+   function createAssignmentTask(courseId: string, assignmentId: string) {
+    const course = getCourse(courseId)
+    const assignment = course?.assignments.find(
+      (item) => item.id === assignmentId,
+    )
+    if (!course || !assignment) return
+    if (
+      assignment.taskId &&
+      course.tasks.some((task) => task.id === assignment.taskId)
+    ) {
+      return
+    }
+
+    const task: Task = {
+      id: uid(),
+      courseId,
+      semesterId: course.semesterId,
+      title: assignment.title,
+      description: assignment.description,
+      type: 'assignment',
+      assessmentId: assignment.assessmentId,
+      assignmentId: assignment.id,
+      dueDate: assignment.dueDate,
+      completed:
+        assignment.status === 'completed' || assignment.status === 'graded',
+      priority: assignment.priority ?? 'medium',
+      difficulty: 'medium',
+      createdAt: new Date().toISOString(),
+    }
+
+    mutateCourse(courseId, (current) => ({
+      ...current,
+      tasks: [...current.tasks, task],
+      assignments: current.assignments.map((item) =>
+        item.id === assignmentId
+          ? { ...item, taskId: task.id, updatedAt: new Date().toISOString() }
+          : item,
+      ),
+    }))
+
+    void saveRemoteTask(task).catch((error) => {
+      console.warn('[supabase] task save failed', error)
     })
   }
 
@@ -598,97 +681,236 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     })
   }
 
-  function addTask(task: Omit<Task, 'id'>) {
+   function addTask(task: Omit<Task, 'id'>) {
     let semesterId = task.semesterId
+
     if (task.courseId && !semesterId) {
       outer: for (const year of state.academicYears) {
-        for (const sem of year.semesters) {
-          if (sem.courses.find((c) => c.id === task.courseId)) {
-            semesterId = sem.id
+        for (const semester of year.semesters) {
+          if (semester.courses.some((course) => course.id === task.courseId)) {
+            semesterId = semester.id
             break outer
           }
         }
       }
     }
+
     if (!semesterId) semesterId = state.activeSemesterId
-    const newTask: Task = { ...task, id: uid(), semesterId, createdAt: new Date().toISOString() }
-    if (task.courseId) {
-      mutateCourse(task.courseId, (c) => ({ ...c, tasks: [...c.tasks, newTask] }))
-    } else {
-      setState((prev) => ({ ...prev, globalTasks: [...prev.globalTasks, newTask] }))
+
+    const newTask: Task = {
+      ...task,
+      id: uid(),
+      semesterId,
+      createdAt: new Date().toISOString(),
     }
-  }
 
-  function updateTask(id: string, patch: Partial<Pick<Task, 'difficulty' | 'title' | 'academicWeek'>>) {
-    const upd = (tasks: Task[]) => tasks.map((t) => (t.id === id ? { ...t, ...patch } : t))
-    setState((prev) => ({
-      ...prev,
-      globalTasks: upd(prev.globalTasks),
-      academicYears: prev.academicYears.map((year) => ({
-        ...year,
-        semesters: year.semesters.map((sem) => ({
-          ...sem,
-          courses: sem.courses.map((c) => ({ ...c, tasks: upd(c.tasks) })),
-        })) as [typeof year.semesters[0], typeof year.semesters[1]],
-      })),
-    }))
-  }
+    if (newTask.courseId) {
+      mutateCourse(newTask.courseId, (course) => ({
+        ...course,
+        tasks: [...course.tasks, newTask],
+      }))
+    } else {
+      setState((prev) => ({
+        ...prev,
+        globalTasks: [...prev.globalTasks, newTask],
+      }))
+    }
 
-  function toggleTask(id: string) {
+    void saveRemoteTask(newTask).catch((error) => {
+      console.warn('[supabase] task save failed', error)
+    })
+  }
+    function updateTask(
+    id: string,
+    patch: Partial<Pick<Task, 'difficulty' | 'title' | 'academicWeek'>>,
+  ) {
+    const current =
+      state.globalTasks.find((task) => task.id === id) ??
+      state.academicYears
+        .flatMap((year) => year.semesters)
+        .flatMap((semester) => semester.courses)
+        .flatMap((course) => course.tasks)
+        .find((task) => task.id === id)
+
+    if (!current) return
+
+    const next = { ...current, ...patch }
+
     setState((prev) => {
-      const toggleInList = (tasks: Task[]) =>
-        tasks.map((t) =>
-          t.id === id
-            ? { ...t, completed: !t.completed, completedAt: !t.completed ? new Date().toISOString() : undefined }
-            : t,
-        )
-      let nowDone: boolean | undefined
-      for (const t of [...prev.globalTasks, ...prev.academicYears.flatMap((y) => y.semesters.flatMap((s) => s.courses.flatMap((c) => c.tasks)))])
-        if (t.id === id) nowDone = !t.completed
-      // Task completion drives the linked assignment: done -> Completed; undone only reverts a Completed one.
-      const syncAssignments = (list: Assignment[]) =>
-        nowDone === undefined
-          ? list
-          : list.map((a) => {
-              if (a.taskId !== id) return a
-              const wasDone = a.status === 'completed' || a.status === 'graded'
-              if (nowDone && !wasDone) return { ...a, status: 'completed' as const, updatedAt: new Date().toISOString(), completedAt: new Date().toISOString() }
-              if (!nowDone && wasDone) return { ...a, status: 'in_progress' as const, updatedAt: new Date().toISOString(), completedAt: undefined }
-              return a
-            })
+      const updateList = (tasks: Task[]) =>
+        tasks.map((task) => (task.id === id ? next : task))
+
       return {
         ...prev,
-        globalTasks: toggleInList(prev.globalTasks),
+        globalTasks: updateList(prev.globalTasks),
         academicYears: prev.academicYears.map((year) => ({
           ...year,
-          semesters: year.semesters.map((sem) => ({
-            ...sem,
-            courses: sem.courses.map((c) => ({ ...c, tasks: toggleInList(c.tasks), assignments: syncAssignments(c.assignments ?? []) })),
+          semesters: year.semesters.map((semester) => ({
+            ...semester,
+            courses: semester.courses.map((course) => ({
+              ...course,
+              tasks: updateList(course.tasks),
+            })),
+          })) as [typeof year.semesters[0], typeof year.semesters[1]],
+        })),
+      }
+    })
+
+    void saveRemoteTask(next).catch((error) => {
+      console.warn('[supabase] task update failed', error)
+    })
+  }
+    function toggleTask(id: string) {
+    const current =
+      state.globalTasks.find((task) => task.id === id) ??
+      state.academicYears
+        .flatMap((year) => year.semesters)
+        .flatMap((semester) => semester.courses)
+        .flatMap((course) => course.tasks)
+        .find((task) => task.id === id)
+
+    if (!current) return
+
+    const now = new Date().toISOString()
+    const nextTask: Task = {
+      ...current,
+      completed: !current.completed,
+      completedAt: !current.completed ? now : undefined,
+    }
+
+    void saveRemoteTask(nextTask).catch((error) => {
+      console.warn('[supabase] task update failed', error)
+    })
+
+    for (const year of state.academicYears) {
+      for (const semester of year.semesters) {
+        for (const course of semester.courses) {
+          for (const assignment of course.assignments ?? []) {
+            if (
+              assignment.taskId !== id &&
+              assignment.id !== current.assignmentId
+            ) {
+              continue
+            }
+
+            const wasDone =
+              assignment.status === 'completed' || assignment.status === 'graded'
+            let updated: Assignment | undefined
+
+            if (nextTask.completed && !wasDone) {
+              updated = {
+                ...assignment,
+                status: 'completed',
+                completedAt: now,
+                updatedAt: now,
+              }
+            } else if (!nextTask.completed && wasDone) {
+              updated = {
+                ...assignment,
+                status: 'in_progress',
+                completedAt: undefined,
+                updatedAt: now,
+              }
+            }
+
+            if (updated) {
+              void saveRemoteAssignment(updated).catch((error) => {
+                console.warn('[supabase] linked assignment update failed', error)
+              })
+            }
+          }
+        }
+      }
+    }
+
+    setState((prev) => {
+      const updateTasks = (tasks: Task[]) =>
+        tasks.map((task) => (task.id === id ? nextTask : task))
+
+      const nowDone = nextTask.completed
+      const syncAssignments = (assignments: Assignment[]) =>
+        assignments.map((assignment) => {
+          if (
+            assignment.taskId !== id &&
+            assignment.id !== current.assignmentId
+          ) {
+            return assignment
+          }
+
+          const wasDone =
+            assignment.status === 'completed' || assignment.status === 'graded'
+
+          if (nowDone && !wasDone) {
+            return {
+              ...assignment,
+              status: 'completed' as const,
+              completedAt: now,
+              updatedAt: now,
+            }
+          }
+
+          if (!nowDone && wasDone) {
+            return {
+              ...assignment,
+              status: 'in_progress' as const,
+              completedAt: undefined,
+              updatedAt: now,
+            }
+          }
+
+          return assignment
+        })
+
+      return {
+        ...prev,
+        globalTasks: updateTasks(prev.globalTasks),
+        academicYears: prev.academicYears.map((year) => ({
+          ...year,
+          semesters: year.semesters.map((semester) => ({
+            ...semester,
+            courses: semester.courses.map((course) => ({
+              ...course,
+              tasks: updateTasks(course.tasks),
+              assignments: syncAssignments(course.assignments ?? []),
+            })),
           })) as [typeof year.semesters[0], typeof year.semesters[1]],
         })),
       }
     })
   }
 
-  function deleteTask(id: string) {
-    const cascade = cascadeAttachments((a) => a.entityType === 'task' && a.entityId === id)
+    function deleteTask(id: string) {
+    const cascade = cascadeAttachments(
+      (attachment) => attachment.entityType === 'task' && attachment.entityId === id,
+    )
+
     setState((prev) => {
-      const removeFromList = (tasks: Task[]) => tasks.filter((t) => t.id !== id)
+      const removeFromList = (tasks: Task[]) =>
+        tasks.filter((task) => task.id !== id)
+
       return {
         ...cascade(prev),
         globalTasks: removeFromList(prev.globalTasks),
         academicYears: prev.academicYears.map((year) => ({
           ...year,
-          semesters: year.semesters.map((sem) => ({
-            ...sem,
-            courses: sem.courses.map((c) => ({
-              ...c,
-              tasks: removeFromList(c.tasks),
-              assignments: (c.assignments ?? []).map((a) => (a.taskId === id ? { ...a, taskId: undefined } : a)),
+          semesters: year.semesters.map((semester) => ({
+            ...semester,
+            courses: semester.courses.map((course) => ({
+              ...course,
+              tasks: removeFromList(course.tasks),
+              assignments: (course.assignments ?? []).map((assignment) =>
+                assignment.taskId === id
+                  ? { ...assignment, taskId: undefined }
+                  : assignment,
+              ),
             })),
           })) as [typeof year.semesters[0], typeof year.semesters[1]],
         })),
       }
+    })
+
+    void deleteRemoteTask(id).catch((error) => {
+      console.warn('[supabase] task delete failed', error)
     })
   }
 
