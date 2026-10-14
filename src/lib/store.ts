@@ -177,6 +177,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   return [...byId.values()]
 }
+  
     // Read fixed semester metadata from Supabase; keep the local fallback and course data.
   useEffect(() => {
     let alive = true
@@ -213,6 +214,39 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
+    // Read assignments from Supabase and merge them into their course.
+  useEffect(() => {
+    let alive = true
+
+    fetchAssignments()
+      .then((remote) => {
+        if (!alive || remote.length === 0) return
+
+        setState((prev) => ({
+          ...prev,
+          academicYears: prev.academicYears.map((year) => ({
+            ...year,
+            semesters: year.semesters.map((semester) => ({
+              ...semester,
+              courses: semester.courses.map((course) => ({
+                ...course,
+                assignments: mergeAssignments(
+                  course.assignments ?? [],
+                  remote.filter((assignment) => assignment.courseId === course.id),
+                ),
+              })),
+            })) as typeof year.semesters,
+          })),
+        }))
+      })
+      .catch((error) => {
+        console.warn('[supabase] assignments unavailable, using local data', error)
+      })
+
+    return () => {
+      alive = false
+    }
+  }, [])
   // Courses + grade components live in Supabase; localStorage keeps a full local cache and everything else.
   const sigs = useRef(new Map<string, string>())
   const queue = useRef<Promise<void>>(Promise.resolve())
@@ -281,7 +315,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     }
   }, [state, remoteReady])
 
-  function addAssignment(courseId: string, data: AssignmentInput): Assignment {
+    function addAssignment(courseId: string, data: AssignmentInput): Assignment {
     const now = new Date().toISOString()
     const course = getCourse(courseId)
     const a: Assignment = {
@@ -294,37 +328,61 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       createdAt: now,
       updatedAt: now,
     }
-    mutateCourse(courseId, (c) => ({ ...c, assignments: [...(c.assignments ?? []), a] }))
+
+    mutateCourse(courseId, (c) => ({
+      ...c,
+      assignments: [...(c.assignments ?? []), a],
+    }))
+
+    void saveRemoteAssignment(a).catch((error) => {
+      console.warn('[supabase] assignment save failed', error)
+    })
+
     return a
   }
 
   function updateAssignment(courseId: string, id: string, patch: Partial<AssignmentInput>) {
     const now = new Date().toISOString()
+    const course = getCourse(courseId)
+    const prev = course?.assignments?.find((assignment) => assignment.id === id)
+    if (!prev) return
+
+    const next = { ...prev, ...patch, updatedAt: now }
+
     mutateCourse(courseId, (c) => {
-      const prev = (c.assignments ?? []).find((a) => a.id === id)
-      if (!prev) return c
-      const next = { ...prev, ...patch, updatedAt: now }
-      // Keep the linked task's deadline/title/priority aligned instead of duplicating state.
-      const isDone = (s: Assignment['status']) => s === 'completed' || s === 'graded'
+      const isDone = (status: Assignment['status']) =>
+        status === 'completed' || status === 'graded'
       const tasks = prev.taskId
-        ? c.tasks.map((t) =>
-            t.id === prev.taskId
+        ? c.tasks.map((task) =>
+            task.id === prev.taskId
               ? {
-                  ...t,
+                  ...task,
                   title: next.title,
                   dueDate: next.dueDate,
-                  priority: next.priority ?? t.priority,
+                  priority: next.priority ?? task.priority,
                   assessmentId: next.assessmentId,
-                  // Only crossing the Completed boundary changes the task (Submitted leaves it alone).
-                  completed: isDone(prev.status) === isDone(next.status) ? t.completed : isDone(next.status),
+                  completed:
+                    isDone(prev.status) === isDone(next.status)
+                      ? task.completed
+                      : isDone(next.status),
                 }
-              : t,
+              : task,
           )
         : c.tasks
-      return { ...c, tasks, assignments: c.assignments.map((a) => (a.id === id ? next : a)) }
+
+      return {
+        ...c,
+        tasks,
+        assignments: c.assignments.map((assignment) =>
+          assignment.id === id ? next : assignment,
+        ),
+      }
+    })
+
+    void saveRemoteAssignment(next).catch((error) => {
+      console.warn('[supabase] assignment update failed', error)
     })
   }
-
   function createAssignmentTask(courseId: string, assignmentId: string) {
     mutateCourse(courseId, (c) => {
       const a = (c.assignments ?? []).find((x) => x.id === assignmentId)
@@ -353,26 +411,39 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   function deleteAssignment(courseId: string, id: string) {
     const course = getCourse(courseId)
-    const a = course?.assignments?.find((x) => x.id === id)
-    if (!a) return
-    // Only a task that was created from this assignment is owned by it.
-    const ownedTask = a.taskId ? course?.tasks.find((t) => t.id === a.taskId && t.assignmentId === id) : undefined
-    const subIds = new Set(state.submissions.filter((s) => s.assignmentId === id).map((s) => s.id))
-    const cascade = cascadeAttachments(
-      (x) =>
-        (x.entityType === 'assignment' && x.entityId === id) ||
-        (x.entityType === 'submission' && subIds.has(x.entityId)) ||
-        (!!ownedTask && x.entityType === 'task' && x.entityId === ownedTask.id),
+    const assignment = course?.assignments?.find((item) => item.id === id)
+    if (!assignment) return
+
+    const ownedTask = assignment.taskId
+      ? course?.tasks.find((task) => task.id === assignment.taskId && task.assignmentId === id)
+      : undefined
+    const submissionIds = new Set(
+      state.submissions.filter((submission) => submission.assignmentId === id).map((submission) => submission.id),
     )
+    const cascade = cascadeAttachments(
+      (attachment) =>
+        (attachment.entityType === 'assignment' && attachment.entityId === id) ||
+        (attachment.entityType === 'submission' && submissionIds.has(attachment.entityId)) ||
+        (!!ownedTask && attachment.entityType === 'task' && attachment.entityId === ownedTask.id),
+    )
+
     setState((prev) => {
       const next = cascade(prev)
-      return { ...next, submissions: next.submissions.filter((s) => s.assignmentId !== id) }
+      return {
+        ...next,
+        submissions: next.submissions.filter((submission) => submission.assignmentId !== id),
+      }
     })
+
     mutateCourse(courseId, (c) => ({
       ...c,
-      assignments: c.assignments.filter((x) => x.id !== id),
-      tasks: ownedTask ? c.tasks.filter((t) => t.id !== ownedTask.id) : c.tasks,
+      assignments: c.assignments.filter((item) => item.id !== id),
+      tasks: ownedTask ? c.tasks.filter((task) => task.id !== ownedTask.id) : c.tasks,
     }))
+
+    void deleteRemoteAssignment(id).catch((error) => {
+      console.warn('[supabase] assignment delete failed', error)
+    })
   }
 
   function setSubmission(courseId: string, assignmentId: string, submitted: boolean, note?: string) {
