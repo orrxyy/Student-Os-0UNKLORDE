@@ -7,6 +7,7 @@ import { applyScheduleSeed } from '../data/schedule'
 import { fileStorage } from './attachmentStorage'
 import { legacyEntryToItem, legacyCategoryToType } from './portfolio'
 import { pullCourses, pushCourse, deleteRemoteCourse, courseSig } from './coursesRemote'
+import { fetchSemesters } from './semesterRemote'
 
 const STORAGE_KEY = 'student-os-v2'
 
@@ -152,6 +153,42 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     saveState(state)
   }, [state])
+
+    // Read fixed semester metadata from Supabase; keep the local fallback and course data.
+  useEffect(() => {
+    let alive = true
+
+    fetchSemesters()
+      .then((remote) => {
+        if (!alive || remote.length === 0) return
+
+        const byId = new Map(remote.map((semester) => [semester.id, semester]))
+
+        setState((prev) => ({
+          ...prev,
+          academicYears: prev.academicYears.map((year) => ({
+            ...year,
+            semesters: year.semesters.map((semester) => {
+              const remoteSemester = byId.get(semester.id)
+              if (!remoteSemester) return semester
+
+              return {
+                ...semester,
+                yearId: remoteSemester.yearId,
+                number: remoteSemester.number,
+              }
+            }) as typeof year.semesters,
+          })),
+        }))
+      })
+      .catch((error) => {
+        console.warn('[supabase] semesters unavailable, using local data', error)
+      })
+
+    return () => {
+      alive = false
+    }
+  }, [])
 
   // Courses + grade components live in Supabase; localStorage keeps a full local cache and everything else.
   const sigs = useRef(new Map<string, string>())
