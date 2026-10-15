@@ -4,7 +4,6 @@ import { Button, Icon, Input } from '../components/ui'
 import { supabase } from '../lib/supabase'
 
 
-const [isSubmitting, setIsSubmitting] = useState(false)
 
 export function LoginPage() {
   const [identifier, setIdentifier] = useState('')
