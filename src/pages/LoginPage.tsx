@@ -11,6 +11,7 @@ export function LoginPage() {
   const [password, setPassword] = useState('')
   const [show, setShow] = useState(false)
   const [errors, setErrors] = useState<{ identifier?: string; password?: string }>({})
+  const [isSubmitting, setIsSubmitting] = useState(false)
   const [authError, setAuthError] = useState('')
   const navigate = useNavigate()
 
