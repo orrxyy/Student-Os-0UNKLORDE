@@ -1,21 +1,19 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Badge, Button, Card, EmptyState, Input, Modal, Progress, Select } from '../components/ui'
+import {
+  deletePersonalActivity,
+  fetchPersonalLife,
+  savePersonalActivity,
+  savePersonalWeekNote,
+  setPersonalCheckin,
+  type PersonalActivity,
+} from '../lib/personalLifeRemote'
 
-// UI prototype only: component-local mock state, nothing is persisted. Replace with real storage in GitHub.
+// Personal Life data is loaded from and saved to Supabase.
 
 type Mode = 'weekly' | 'temporary'
 
-interface Activity {
-  id: string
-  name: string
-  focus: string
-  mode: Mode
-  target?: number
-  startDate: string
-  endDate?: string
-  notes: string
-  archived: boolean
-}
+type Activity = PersonalActivity
 
 interface Draft {
   name: string
@@ -26,7 +24,7 @@ interface Draft {
   notes: string
 }
 
-const DAY_MS = 86400000
+
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 
 const dateKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -43,24 +41,14 @@ const todayKey = dateKey(today)
 
 const emptyDraft: Draft = { name: '', focus: '', mode: 'weekly', target: '', endDate: '', notes: '' }
 
-function seed(): { activities: Activity[]; checks: string[] } {
-  const start = dateKey(addDays(thisMonday, -14))
-  const checks = [0, 1, 3].map((i) => `gym:${dateKey(addDays(thisMonday, i))}`)
-  checks.push(`zh:${dateKey(thisMonday)}`, `zh:${dateKey(addDays(thisMonday, 1))}`)
-  return {
-    activities: [
-      { id: 'gym', name: 'Gym training', focus: 'Strength training', mode: 'weekly', target: 4, startDate: start, notes: 'Push / pull / legs split.', archived: false },
-      { id: 'zh', name: 'Learn Chinese', focus: 'Chinese vocabulary', mode: 'temporary', target: 5, startDate: start, endDate: dateKey(addDays(thisMonday, 55)), notes: 'HSK 2 vocabulary, 20 minutes a day.', archived: false },
-    ],
-    checks,
-  }
-}
+
 
 export function PersonalLifePage() {
-  const initial = useState(seed)[0]
-  const [activities, setActivities] = useState<Activity[]>(initial.activities)
-  const [checks, setChecks] = useState<Set<string>>(new Set(initial.checks))
+  const [activities, setActivities] = useState<Activity[]>([])
+  const [checks, setChecks] = useState<Set<string>>(new Set())
   const [weekNotes, setWeekNotes] = useState<Record<string, string>>({})
+  const [loading, setLoading] = useState(true)
+  const [storageError, setStorageError] = useState('')
   const [weekStart, setWeekStart] = useState(thisMonday)
   const [editing, setEditing] = useState<string | 'new' | null>(null)
   const [draft, setDraft] = useState<Draft>(emptyDraft)
@@ -82,7 +70,28 @@ export function PersonalLifePage() {
   const totalDone = visible.reduce((n, a) => n + doneIn(a), 0)
   const hit = visible.filter((a) => a.target && doneIn(a) >= a.target).length
   const withTarget = visible.filter((a) => a.target).length
+useEffect(() => {
+  let active = true
 
+  fetchPersonalLife()
+    .then((data) => {
+      if (!active) return
+      setActivities(data.activities)
+      setChecks(new Set(data.checks))
+      setWeekNotes(data.weekNotes)
+    })
+    .catch((error) => {
+      console.error('[supabase] personal life load failed', error)
+      if (active) setStorageError('Could not load Personal Life data from Supabase.')
+    })
+    .finally(() => {
+      if (active) setLoading(false)
+    })
+
+  return () => {
+    active = false
+  }
+}, [])
   function openNew() {
     setDraft(emptyDraft)
     setDraftError('')
@@ -93,37 +102,111 @@ export function PersonalLifePage() {
     setDraftError('')
     setEditing(a.id)
   }
-  function save() {
-    const name = draft.name.trim()
-    const focus = draft.focus.trim()
-    const target = draft.target.trim() === '' ? undefined : Number(draft.target)
-    if (!name) return setDraftError('Give the activity a name.')
-    if (target !== undefined && (!Number.isInteger(target) || target < 1 || target > 7)) return setDraftError('Weekly target must be a whole number from 1 to 7.')
-    if (draft.mode === 'temporary' && draft.endDate && draft.endDate < dateKey(weekStart) && editing === 'new') return setDraftError('End date is before the week you are viewing.')
-    const endDate = draft.mode === 'temporary' && draft.endDate ? draft.endDate : undefined
-    if (editing === 'new') {
-      setActivities((p) => [...p, { id: `a_${Date.now().toString(36)}`, name, focus, mode: draft.mode, target, startDate: weekStartKey, endDate, notes: draft.notes.trim(), archived: false }])
-    } else {
-      setActivities((p) => p.map((a) => (a.id === editing ? { ...a, name, focus, mode: draft.mode, target, endDate, notes: draft.notes.trim() } : a)))
-    }
-    setEditing(null)
+async function save() {
+  const name = draft.name.trim()
+  const focus = draft.focus.trim()
+  const target = draft.target.trim() === '' ? undefined : Number(draft.target)
+
+  if (!name) return setDraftError('Give the activity a name.')
+  if (target !== undefined && (!Number.isInteger(target) || target < 1 || target > 7)) {
+    return setDraftError('Weekly target must be a whole number from 1 to 7.')
   }
-  function toggleCheck(id: string, key: string) {
-    setChecks((prev) => {
-      const next = new Set(prev)
-      const k = `${id}:${key}`
-      if (next.has(k)) next.delete(k)
-      else next.add(k)
+  if (
+    draft.mode === 'temporary' &&
+    draft.endDate &&
+    draft.endDate < dateKey(weekStart) &&
+    editing === 'new'
+  ) {
+    return setDraftError('End date is before the week you are viewing.')
+  }
+
+  const existing = editing === 'new'
+    ? undefined
+    : activities.find((activity) => activity.id === editing)
+
+  const activity: Activity = {
+    id: existing?.id ?? `a_${Date.now().toString(36)}`,
+    name,
+    focus,
+    mode: draft.mode,
+    target,
+    startDate: existing?.startDate ?? weekStartKey,
+    endDate: draft.mode === 'temporary' && draft.endDate ? draft.endDate : undefined,
+    notes: draft.notes.trim(),
+    archived: existing?.archived ?? false,
+  }
+
+  try {
+    setStorageError('')
+    await savePersonalActivity(activity)
+    setActivities((current) => {
+      const exists = current.some((item) => item.id === activity.id)
+      return exists
+        ? current.map((item) => item.id === activity.id ? activity : item)
+        : [...current, activity]
+    })
+    setEditing(null)
+  } catch (error) {
+    console.error('[supabase] personal activity save failed', error)
+    setStorageError('Could not save the activity. Check the Supabase connection and try again.')
+  }
+}
+
+async function toggleCheck(id: string, key: string) {
+  const checked = !checks.has(`${id}:${key}`)
+
+  try {
+    setStorageError('')
+    await setPersonalCheckin(id, key, checked)
+    setChecks((current) => {
+      const next = new Set(current)
+      const checkKey = `${id}:${key}`
+      if (checked) next.add(checkKey)
+      else next.delete(checkKey)
       return next
     })
+  } catch (error) {
+    console.error('[supabase] personal check-in save failed', error)
+    setStorageError('Could not save that check-in.')
   }
-  function remove(a: Activity) {
-    setActivities((p) => p.filter((x) => x.id !== a.id))
-    setChecks((p) => new Set([...p].filter((k) => !k.startsWith(`${a.id}:`))))
-    setWeekNotes((p) => Object.fromEntries(Object.entries(p).filter(([k]) => !k.startsWith(`${a.id}:`))))
+}
+
+async function remove(activity: Activity) {
+  try {
+    setStorageError('')
+    await deletePersonalActivity(activity.id)
+    setActivities((current) => current.filter((item) => item.id !== activity.id))
+    setChecks((current) => new Set(
+      [...current].filter((key) => !key.startsWith(`${activity.id}:`)),
+    ))
+    setWeekNotes((current) => Object.fromEntries(
+      Object.entries(current).filter(([key]) => !key.startsWith(`${activity.id}:`)),
+    ))
     setDeleting(null)
+  } catch (error) {
+    console.error('[supabase] personal activity delete failed', error)
+    setStorageError('Could not delete the activity.')
   }
-  const setArchived = (id: string, v: boolean) => setActivities((p) => p.map((a) => (a.id === id ? { ...a, archived: v } : a)))
+}
+
+async function setArchived(id: string, archivedValue: boolean) {
+  const activity = activities.find((item) => item.id === id)
+  if (!activity) return
+
+  const updated = { ...activity, archived: archivedValue }
+
+  try {
+    setStorageError('')
+    await savePersonalActivity(updated)
+    setActivities((current) =>
+      current.map((item) => item.id === id ? updated : item),
+    )
+  } catch (error) {
+    console.error('[supabase] personal activity archive failed', error)
+    setStorageError('Could not update the activity.')
+  }
+}
+
 
   return (
     <div className="p-4 sm:p-6 max-w-5xl mx-auto w-full space-y-5 min-w-0">
@@ -136,9 +219,20 @@ export function PersonalLifePage() {
         <Button icon="plus" onClick={openNew}>Add activity</Button>
       </div>
 
-      <p className="text-xs rounded border border-border bg-muted px-3 py-2 text-muted-foreground">
-        Prototype: changes live only on this page and reset when you leave or refresh.
-      </p>
+{loading && (
+  <p className="text-xs text-muted-foreground">
+    Loading Personal Life data…
+  </p>
+)}
+
+{storageError && (
+  <p
+    role="alert"
+    className="text-xs rounded border border-destructive/50 bg-destructive/10 px-3 py-2 text-destructive"
+  >
+    {storageError}
+  </p>
+)}
 
       <div className="flex flex-wrap items-center gap-2">
         <Button variant="outline" size="sm" icon="chevron-left" aria-label="Previous week" onClick={() => setWeekStart(addDays(weekStart, -7))} />
@@ -221,6 +315,13 @@ export function PersonalLifePage() {
                     rows={2}
                     value={weekNotes[noteKey] ?? ''}
                     onChange={(e) => setWeekNotes((p) => ({ ...p, [noteKey]: e.target.value }))}
+                    onBlur={() => {
+  const content = weekNotes[noteKey] ?? ''
+  savePersonalWeekNote(a.id, weekStartKey, content).catch((error) => {
+    console.error('[supabase] personal weekly note save failed', error)
+    setStorageError('Could not save the weekly note.')
+  })
+}}
                     placeholder={a.notes || 'How did it go?'}
                     className="mt-1 w-full bg-card border border-border rounded px-3 py-2 text-sm placeholder:text-muted-foreground focus:border-ring focus:ring-1 focus:ring-ring outline-none"
                   />
