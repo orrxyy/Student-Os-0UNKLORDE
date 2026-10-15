@@ -1,34 +1,48 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router'
 import { Button, Icon, Input } from '../components/ui'
+import { supabase } from '../lib/supabase'
 
-// UI prototype only: no real authentication, storage, or network calls.
-// TEMPORARY PREVIEW GATE: the hardcoded credentials below are visible to anyone who reads the bundle and are NOT secure.
-// REMOVE this constant and the check in onSubmit, and wire a real auth provider, before copying or committing to GitHub.
-const TEMP_PREVIEW_CREDENTIALS = { username: 'admin123', password: '123' }
+
+const [isSubmitting, setIsSubmitting] = useState(false)
 
 export function LoginPage() {
   const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('')
-  const [remember, setRemember] = useState(false)
   const [show, setShow] = useState(false)
   const [errors, setErrors] = useState<{ identifier?: string; password?: string }>({})
   const [authError, setAuthError] = useState('')
   const navigate = useNavigate()
 
-  function onSubmit(e: React.FormEvent) {
+  async function onSubmit(e: React.FormEvent) {
     e.preventDefault()
+
     const next: typeof errors = {}
-    if (!identifier.trim()) next.identifier = 'Enter your username or email'
+    if (!identifier.trim()) next.identifier = 'Enter your email'
     if (!password) next.password = 'Enter your password'
+
     setErrors(next)
     setAuthError('')
     if (Object.keys(next).length > 0) return
-    // TEMPORARY PREVIEW GATE check (see note at top of file). Nothing is stored.
-    if (identifier.trim() === TEMP_PREVIEW_CREDENTIALS.username && password === TEMP_PREVIEW_CREDENTIALS.password) {
-      navigate('/')
-    } else {
-      setAuthError('Incorrect username or password.')
+
+    setIsSubmitting(true)
+    try {
+      const { error } = await supabase.auth.signInWithPassword({
+        email: identifier.trim(),
+        password,
+      })
+
+      if (error) {
+        setAuthError('Email or password is incorrect.')
+        return
+      }
+
+      navigate('/', { replace: true })
+    } catch (error) {
+      console.error('[auth] sign-in failed', error)
+      setAuthError('Could not sign in. Check your connection and try again.')
+    } finally {
+      setIsSubmitting(false)
     }
   }
 
@@ -53,9 +67,9 @@ export function LoginPage() {
           </div>
 
           <Input
-            label="Username or email"
+            label="Email address"
             icon="user"
-            autoComplete="username"
+            autoComplete="email"
             value={identifier}
             onChange={(e) => { setIdentifier(e.target.value); setAuthError('') }}
             error={errors.identifier}
@@ -83,17 +97,9 @@ export function LoginPage() {
             </div>
           </div>
 
-          <label className="flex items-center gap-2.5 text-sm cursor-pointer select-none min-h-10">
-            <input
-              type="checkbox"
-              checked={remember}
-              onChange={(e) => setRemember(e.target.checked)}
-              className="w-4 h-4 accent-[var(--color-ring)]"
-            />
-            Remember me
-          </label>
-
-          <Button type="submit" size="lg" className="w-full !bg-silver-wolf text-white">Log in</Button>
+          <Button type="submit" size="lg" disabled={isSubmitting} className="w-full !bg-silver-wolf text-white">
+  {isSubmitting ? 'Signing in…' : 'Log in'}
+</Button>
 
           {authError && (
             <p role="alert" className="text-xs rounded border border-destructive/50 bg-destructive/10 px-3 py-2 text-destructive">
