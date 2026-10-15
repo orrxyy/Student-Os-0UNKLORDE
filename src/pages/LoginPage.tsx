@@ -12,8 +12,40 @@ export function LoginPage() {
   const [errors, setErrors] = useState<{ identifier?: string; password?: string }>({})
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [authError, setAuthError] = useState('')
+  const [resetMessage, setResetMessage] = useState('')
   const navigate = useNavigate()
 
+  async function sendPasswordReset() {
+  const email = identifier.trim()
+
+  if (!email) {
+    setErrors({ identifier: 'Enter your email first' })
+    setResetMessage('')
+    return
+  }
+
+  setIsSubmitting(true)
+  setAuthError('')
+  setResetMessage('')
+
+  try {
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/update-password`,
+    })
+
+    if (error) {
+      setAuthError(error.message)
+      return
+    }
+
+    setResetMessage('Password reset link sent. Check your email inbox.')
+  } catch (error) {
+    console.error('[auth] password reset failed', error)
+    setAuthError('Could not send the reset email. Please try again.')
+  } finally {
+    setIsSubmitting(false)
+  }
+}
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault()
 
@@ -100,6 +132,22 @@ export function LoginPage() {
           <Button type="submit" size="lg" disabled={isSubmitting} className="w-full !bg-silver-wolf text-white">
   {isSubmitting ? 'Signing in…' : 'Log in'}
 </Button>
+          <Button
+  type="button"
+  variant="ghost"
+  size="sm"
+  disabled={isSubmitting}
+  onClick={sendPasswordReset}
+  className="w-full"
+>
+  Forgot password?
+</Button>
+
+{resetMessage && (
+  <p role="status" className="text-xs text-muted-foreground">
+    {resetMessage}
+  </p>
+)}
 
           {authError && (
             <p role="alert" className="text-xs rounded border border-destructive/50 bg-destructive/10 px-3 py-2 text-destructive">
