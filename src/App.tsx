@@ -17,6 +17,7 @@ import { AnalyticsPage } from './pages/AnalyticsPage'
 import { EmptyState } from './components/ui'
 import { LoginPage } from './pages/LoginPage'
 import { PersonalLifePage } from './pages/PersonalLifePage'
+import { UpdatePasswordPage } from './pages/UpdatePasswordPage'
 
 function RequireAuth() {
   const [session, setSession] = useState<Session | null>(null)
@@ -61,6 +62,7 @@ function Placeholder({ title, icon }: { title: string; icon?: Parameters<typeof 
 
 const router = createBrowserRouter([
   { path: '/login', element: <LoginPage /> },
+  { path: '/update-password', element: <UpdatePasswordPage /> },
   {
     element: <RequireAuth />,
     children: [
