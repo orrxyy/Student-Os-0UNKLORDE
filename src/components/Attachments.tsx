@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../lib/store'
 import { getAttachments } from '../lib/selectors'
 import {
+  fileStorage as indexedDbStorage,
+  remoteFileStorage,
+} from '../lib/attachmentStorage'
+import {
   canPreview, formatBytes, kindLabel, kindOf, newAttachmentId, resolveMime, sanitizeFileName, validateFile,
 } from '../lib/attachments'
 import { Icon, Modal } from './ui'
