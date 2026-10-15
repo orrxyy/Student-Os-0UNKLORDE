@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../lib/store'
 import { getAttachments } from '../lib/selectors'
-import { fileStorage, isQuotaError } from '../lib/attachmentStorage'
 import {
   canPreview, formatBytes, kindLabel, kindOf, newAttachmentId, resolveMime, sanitizeFileName, validateFile,
 } from '../lib/attachments'
@@ -15,32 +14,49 @@ const KIND_ICON: Record<ReturnType<typeof kindOf>, IconName> = {
   presentation: 'layers', text: 'file-text', archive: 'folder', other: 'paperclip',
 }
 
+function storageFor(a: Attachment) {
+  return a.storage.provider === 'remote' ? remoteFileStorage : indexedDbStorage
+}
+
 function useBlobUrl(a: Attachment, enabled: boolean) {
   const [url, setUrl] = useState<string | null>(null)
   const [missing, setMissing] = useState(false)
+
   useEffect(() => {
     if (!enabled) return
+
     let revoke: string | null = null
     let alive = true
-    fileStorage
+
+    storageFor(a)
       .get(a.storage.key)
       .then((blob) => {
         if (!alive) return
-        if (!blob) return setMissing(true)
-        revoke = URL.createObjectURL(blob.type === a.mimeType ? blob : new Blob([blob], { type: a.mimeType }))
+        if (!blob) {
+          setMissing(true)
+          return
+        }
+
+        revoke = URL.createObjectURL(
+          blob.type === a.mimeType ? blob : new Blob([blob], { type: a.mimeType }),
+        )
         setUrl(revoke)
       })
-      .catch(() => alive && setMissing(true))
+      .catch(() => {
+        if (alive) setMissing(true)
+      })
+
     return () => {
       alive = false
       if (revoke) URL.revokeObjectURL(revoke)
     }
-  }, [a.storage.key, a.mimeType, enabled])
+  }, [a.storage.provider, a.storage.key, a.mimeType, enabled])
+
   return { url, missing }
 }
 
 async function blobFor(a: Attachment): Promise<string | null> {
-  const blob = await fileStorage.get(a.storage.key)
+  const blob = await storageFor(a).get(a.storage.key)
   if (!blob) return null
   return URL.createObjectURL(blob.type === a.mimeType ? blob : new Blob([blob], { type: a.mimeType }))
 }
@@ -128,43 +144,55 @@ interface AttachTarget {
   courseId?: string
 }
 
-/** Validate, store bytes via fileStorage, then record metadata. Returns user-facing error strings. */
+/** Validate files, upload bytes remotely, then record metadata. */
 export async function attachFiles(
   files: File[],
   target: AttachTarget,
   existing: Attachment[],
-  addAttachment: (a: Attachment) => void,
+  addAttachment: (attachment: Attachment) => Promise<void>,
 ): Promise<string[]> {
   const errs: string[] = []
   const used: Attachment[] = [...existing]
+
   for (const file of files) {
     const problem = validateFile(file)
     if (problem) {
       errs.push(problem)
       continue
     }
+
     const id = newAttachmentId(used)
     const mimeType = resolveMime(file)
-    try {
-      await fileStorage.save(id, file.type === mimeType ? file : new Blob([file], { type: mimeType }))
-    } catch (e) {
-      errs.push(
-        isQuotaError(e)
-          ? `“${file.name}”: browser storage is full. Remove some attachments and try again.`
-          : `“${file.name}” could not be saved: ${e instanceof Error ? e.message : 'storage error'}`,
-      )
-      continue
-    }
     const now = new Date().toISOString()
-    const att: Attachment = {
-      id, fileName: sanitizeFileName(file.name), mimeType, fileSize: file.size,
-      createdAt: now, updatedAt: now,
-      storage: { provider: fileStorage.provider, key: id },
+
+    const attachment: Attachment = {
+      id,
+      fileName: sanitizeFileName(file.name),
+      mimeType,
+      fileSize: file.size,
+      createdAt: now,
+      updatedAt: now,
+      storage: { provider: 'remote', key: id },
       ...target,
     }
-    used.push(att)
-    addAttachment(att)
+
+    try {
+      const blob =
+        file.type === mimeType ? file : new Blob([file], { type: mimeType })
+
+      await remoteFileStorage.save(id, blob)
+      await addAttachment(attachment)
+      used.push(attachment)
+    } catch (error) {
+      await remoteFileStorage.delete(id).catch(() => undefined)
+      errs.push(
+        `“${file.name}” could not be saved: ${
+          error instanceof Error ? error.message : 'storage error'
+        }`,
+      )
+    }
   }
+
   return errs
 }
 
@@ -249,12 +277,26 @@ export function AttachmentSection({ entityType, entityId, semesterId, courseId, 
 
   async function onPick(files: FileList | null) {
     if (!files || files.length === 0) return
-    setBusy(true)
-    setErrors(await attachFiles(Array.from(files), { entityType, entityId, semesterId, courseId }, state.attachments, addAttachment))
-    setBusy(false)
-    if (inputRef.current) inputRef.current.value = ''
-  }
 
+    setBusy(true)
+    try {
+      setErrors(
+        await attachFiles(
+          Array.from(files),
+          { entityType, entityId, semesterId, courseId },
+          state.attachments,
+          addAttachment,
+        ),
+      )
+    } catch (error) {
+      setErrors([
+        error instanceof Error ? error.message : 'Could not attach file.',
+      ])
+    } finally {
+      setBusy(false)
+      if (inputRef.current) inputRef.current.value = ''
+    }
+  }
   return (
     <div className={`space-y-2 min-w-0 ${className}`}>
       {(!compact || list.length > 0) && (
