@@ -1223,12 +1223,13 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
    function addCertificate(data: CertificateInput): Certificate {
     const now = new Date().toISOString()
-    const certificate: Certificate = {
-      ...resolveCertificate(data),
-      id: uid(),
-      createdAt: now,
-      updatedAt: now,
-    }
+// addCertificate
+const certificate: Certificate = {
+  ...data,
+  id: uid(),
+  createdAt: now,
+  updatedAt: now,
+}
 
     setState((prev) => ({
       ...prev,
@@ -1246,12 +1247,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     const current = state.certificates.find((certificate) => certificate.id === id)
     if (!current) return
 
-    const certificate: Certificate = {
-      ...current,
-      ...resolveCertificate(data),
-      updatedAt: new Date().toISOString(),
-    }
-
+// updateCertificate
+const certificate: Certificate = {
+  ...current,
+  ...data,
+  updatedAt: new Date().toISOString(),
+}
     setState((prev) => ({
       ...prev,
       certificates: prev.certificates.map((item) =>
