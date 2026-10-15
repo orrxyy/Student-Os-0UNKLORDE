@@ -22,6 +22,11 @@ import {
   fetchSubmissions,
   saveRemoteSubmission,
 } from './submissionsRemote'
+import {
+  deleteRemoteMaterial,
+  fetchMaterials,
+  saveRemoteMaterial,
+} from './materialsRemote'
 
 const STORAGE_KEY = 'student-os-v2'
 
@@ -350,6 +355,49 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           '[supabase] submissions unavailable, using local data',
           error,
         )
+      })
+
+    return () => {
+      alive = false
+    }
+  }, [])
+    // Read materials from Supabase and merge them into their courses.
+  useEffect(() => {
+    let alive = true
+
+    fetchMaterials()
+      .then((remote) => {
+        if (!alive || remote.length === 0) return
+
+        setState((prev) => ({
+          ...prev,
+          academicYears: prev.academicYears.map((year) => ({
+            ...year,
+            semesters: year.semesters.map((semester) => ({
+              ...semester,
+              courses: semester.courses.map((course) => {
+                const byId = new Map(
+                  course.materials.map((material) => [material.id, material] as const),
+                )
+
+                for (const material of remote.filter(
+                  (item) => item.courseId === course.id,
+                )) {
+                  const local = byId.get(material.id)
+                  byId.set(
+                    material.id,
+                    local ? { ...local, ...material } : material,
+                  )
+                }
+
+                return { ...course, materials: [...byId.values()] }
+              }),
+            })) as typeof year.semesters,
+          })),
+        }))
+      })
+      .catch((error) => {
+        console.warn('[supabase] materials unavailable, using local data', error)
       })
 
     return () => {
@@ -1003,29 +1051,82 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     })
   }
 
-  function addMaterial(courseId: string, data: { week: number; topic: string; type: MaterialType; url?: string; notes?: string }): Material {
-    let semesterId: string | undefined
-    outer: for (const year of state.academicYears) {
-      for (const sem of year.semesters) {
-        if (sem.courses.find((c) => c.id === courseId)) {
-          semesterId = sem.id
-          break outer
-        }
-      }
+  function addMaterial(
+    courseId: string,
+    data: {
+      week: number
+      topic: string
+      type: MaterialType
+      url?: string
+      notes?: string
+    },
+  ): Material {
+    const course = getCourse(courseId)
+    const material: Material = {
+      ...data,
+      id: uid(),
+      courseId,
+      semesterId: course?.semesterId,
+      createdAt: new Date().toISOString(),
     }
-    const mat: Material = { ...data, id: uid(), courseId, semesterId }
-    mutateCourse(courseId, (c) => ({ ...c, materials: [...c.materials, mat] }))
-    return mat
+
+    mutateCourse(courseId, (current) => ({
+      ...current,
+      materials: [...current.materials, material],
+    }))
+
+    void saveRemoteMaterial(material).catch((error) => {
+      console.warn('[supabase] material save failed', error)
+    })
+
+    return material
   }
 
-  function updateMaterial(courseId: string, materialId: string, patch: Partial<Pick<Material, 'topic' | 'title' | 'url' | 'academicWeek' | 'week' | 'type'>>) {
-    mutateCourse(courseId, (c) => ({ ...c, materials: c.materials.map((m) => (m.id === materialId ? { ...m, ...patch } : m)) }))
+  function updateMaterial(
+    courseId: string,
+    materialId: string,
+    patch: Partial<
+      Pick<Material, 'topic' | 'title' | 'url' | 'academicWeek' | 'week' | 'type'>
+    >,
+  ) {
+    const current = getCourse(courseId)?.materials.find(
+      (material) => material.id === materialId,
+    )
+    if (!current) return
+
+    const next = { ...current, ...patch }
+
+    mutateCourse(courseId, (course) => ({
+      ...course,
+      materials: course.materials.map((material) =>
+        material.id === materialId ? next : material,
+      ),
+    }))
+
+    void saveRemoteMaterial(next).catch((error) => {
+      console.warn('[supabase] material update failed', error)
+    })
   }
 
   function deleteMaterial(courseId: string, materialId: string) {
-    const cascade = cascadeAttachments((a) => a.entityType === 'material' && a.entityId === materialId)
+    const cascade = cascadeAttachments(
+      (attachment) =>
+        attachment.entityType === 'material' &&
+        attachment.entityId === materialId,
+    )
+
     setState(cascade)
-    mutateCourse(courseId, (c) => ({ ...c, materials: c.materials.filter((m) => m.id !== materialId) }))
+
+    mutateCourse(courseId, (course) => ({
+      ...course,
+      materials: course.materials.filter(
+        (material) => material.id !== materialId,
+      ),
+    }))
+
+    void deleteRemoteMaterial(materialId).catch((error) => {
+      console.warn('[supabase] material delete failed', error)
+    })
   }
 
   function resolveCertificate(data: CertificateInput): CertificateInput {
