@@ -18,6 +18,10 @@ import {
   fetchTasks,
   saveRemoteTask,
 } from './tasksRemote'
+import {
+  fetchSubmissions,
+  saveRemoteSubmission,
+} from './submissionsRemote'
 
 const STORAGE_KEY = 'student-os-v2'
 
@@ -311,6 +315,47 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       alive = false
     }
   }, [])
+    // Read submissions from Supabase; keep existing local submissions.
+  useEffect(() => {
+    let alive = true
+
+    fetchSubmissions()
+      .then((remote) => {
+        if (!alive || remote.length === 0) return
+
+        setState((prev) => {
+          const byAssignmentId = new Map(
+            prev.submissions.map((submission) => [
+              submission.assignmentId,
+              submission,
+            ] as const),
+          )
+
+          for (const submission of remote) {
+            const local = byAssignmentId.get(submission.assignmentId)
+            byAssignmentId.set(
+              submission.assignmentId,
+              local ? { ...local, ...submission } : submission,
+            )
+          }
+
+          return {
+            ...prev,
+            submissions: [...byAssignmentId.values()],
+          }
+        })
+      })
+      .catch((error) => {
+        console.warn(
+          '[supabase] submissions unavailable, using local data',
+          error,
+        )
+      })
+
+    return () => {
+      alive = false
+    }
+  }, [])
   // Courses + grade components live in Supabase; localStorage keeps a full local cache and everything else.
   const sigs = useRef(new Map<string, string>())
   const queue = useRef<Promise<void>>(Promise.resolve())
@@ -529,30 +574,74 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     })
   }
 
-  function setSubmission(courseId: string, assignmentId: string, submitted: boolean, note?: string) {
+    function setSubmission(
+    courseId: string,
+    assignmentId: string,
+    submitted: boolean,
+    note?: string,
+  ) {
     const course = getCourse(courseId)
-    const a = course?.assignments?.find((x) => x.id === assignmentId)
-    if (!course || !a) return
+    const assignment = course?.assignments?.find(
+      (item) => item.id === assignmentId,
+    )
+    if (!course || !assignment) return
+
     const now = new Date().toISOString()
-    // One record per assignment: update in place instead of creating another.
-    setState((prev) => {
-      const existing = prev.submissions.find((s) => s.assignmentId === assignmentId)
-      const patch = submitted
-        ? { status: 'submitted' as const, submittedAt: now, note: note?.trim() || undefined }
-        : { status: 'not_submitted' as const, submittedAt: undefined }
-      if (existing) {
-        return { ...prev, submissions: prev.submissions.map((s) => (s.id === existing.id ? { ...s, ...patch, updatedAt: now } : s)) }
-      }
-      const created: Submission = {
-        id: uid(), assignmentId, courseId, semesterId: course.semesterId, createdAt: now, updatedAt: now,
-        ...patch,
-      }
-      return { ...prev, submissions: [...prev.submissions, created] }
+    const existing = state.submissions.find(
+      (submission) => submission.assignmentId === assignmentId,
+    )
+
+    const patch = submitted
+      ? {
+          status: 'submitted' as const,
+          submittedAt: now,
+          note: note?.trim() || undefined,
+        }
+      : {
+          status: 'not_submitted' as const,
+          submittedAt: undefined,
+          note: note?.trim() || undefined,
+        }
+
+    const next: Submission = existing
+      ? { ...existing, ...patch, updatedAt: now }
+      : {
+          id: uid(),
+          assignmentId,
+          courseId,
+          semesterId: course.semesterId,
+          createdAt: now,
+          updatedAt: now,
+          ...patch,
+        }
+
+    setState((prev) => ({
+      ...prev,
+      submissions: [
+        ...prev.submissions.filter(
+          (submission) => submission.assignmentId !== assignmentId,
+        ),
+        next,
+      ],
+    }))
+
+    void saveRemoteSubmission(next).catch((error) => {
+      console.warn('[supabase] submission save failed', error)
     })
-    // Keep the assignment status in step, without ever auto-completing it.
-    if (submitted && (a.status === 'pending' || a.status === 'in_progress')) updateAssignment(courseId, assignmentId, { status: 'submitted' })
-    if (!submitted && a.status === 'submitted') updateAssignment(courseId, assignmentId, { status: 'in_progress' })
+
+    // Keep the assignment status in step, without automatically completing it.
+    if (
+      submitted &&
+      (assignment.status === 'pending' || assignment.status === 'in_progress')
+    ) {
+      updateAssignment(courseId, assignmentId, { status: 'submitted' })
+    }
+
+    if (!submitted && assignment.status === 'submitted') {
+      updateAssignment(courseId, assignmentId, { status: 'in_progress' })
+    }
   }
+
 
   function mutateCourse(courseId: string, fn: (c: Course) => Course): void {
     setState((prev) => ({
