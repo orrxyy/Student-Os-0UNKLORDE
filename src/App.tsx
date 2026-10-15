@@ -12,6 +12,8 @@ import { MaterialsPage } from './pages/MaterialsPage'
 import { CertificatesPage } from './pages/CertificatesPage'
 import { AnalyticsPage } from './pages/AnalyticsPage'
 import { EmptyState } from './components/ui'
+import { LoginPage } from './pages/LoginPage'
+import { PersonalLifePage } from './pages/PersonalLifePage'
 
 function Placeholder({ title, icon }: { title: string; icon?: Parameters<typeof EmptyState>[0]['icon'] }) {
   return (
@@ -23,10 +25,12 @@ function Placeholder({ title, icon }: { title: string; icon?: Parameters<typeof 
 
 const router = createBrowserRouter([
   {
+    { path: '/login', element: <LoginPage /> },
     path: '/',
     element: <AppShell />,
     children: [
       { index: true, element: <DashboardPage /> },
+      { path: 'personal', element: <PersonalLifePage /> },
       { path: 'academics', element: <AcademicsPage /> },
       { path: 'academics/:year/:sem', element: <SemesterPage /> },
       { path: 'course/:id', element: <CourseDetailPage /> },
