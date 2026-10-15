@@ -24,8 +24,8 @@ function Placeholder({ title, icon }: { title: string; icon?: Parameters<typeof 
 }
 
 const router = createBrowserRouter([
+  { path: '/login', element: <LoginPage /> },
   {
-    { path: '/login', element: <LoginPage /> },
     path: '/',
     element: <AppShell />,
     children: [
