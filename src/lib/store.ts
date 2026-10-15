@@ -5,6 +5,11 @@ import { defaultGradingScale } from '../data/mock'
 import { stampCourse } from './stamp'
 import { applyScheduleSeed } from '../data/schedule'
 import { fileStorage } from './attachmentStorage'
+import {
+  deleteRemoteAttachment,
+  fetchRemoteAttachments,
+  saveRemoteAttachment,
+} from './attachmentsRemote'
 import { legacyEntryToItem, legacyCategoryToType } from './portfolio'
 import { pullCourses, pushCourse, deleteRemoteCourse, courseSig } from './coursesRemote'
 import { fetchSemesters } from './semesterRemote'
@@ -171,8 +176,8 @@ type StoreContextType = {
   updateNote: (id: string, fields: Partial<Omit<Note, 'id' | 'createdAt'>>) => void
   deleteNote: (id: string) => void
   addPortfolio: (entry: Omit<PortfolioEntry, 'id'>) => void
-  addAttachment: (a: Attachment) => void
-  removeAttachment: (id: string) => void
+  addAttachment: (a: Attachment) => Promise<void>
+  removeAttachment: (id: string) => Promise<void>
   resetState: () => void
 }
 
@@ -443,6 +448,32 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       alive = false
     }
   }, [])
+
+  useEffect(() => {
+  let alive = true
+
+  fetchRemoteAttachments()
+    .then((remote) => {
+      if (!alive || remote.length === 0) return
+
+      setState((prev) => {
+        const byId = new Map(prev.attachments.map((attachment) => [attachment.id, attachment]))
+
+        for (const attachment of remote) {
+          byId.set(attachment.id, attachment)
+        }
+
+        return { ...prev, attachments: [...byId.values()] }
+      })
+    })
+    .catch((error) => {
+      console.warn('[supabase] attachments unavailable, using local data', error)
+    })
+
+  return () => {
+    alive = false
+  }
+}, [])
   
     // Read certificates from Supabase and merge them with the local cache.
   useEffect(() => {
@@ -846,25 +877,59 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     return newCourse
   }
 
-  function dropBlobs(list: Attachment[]) {
-    for (const a of list) fileStorage.delete(a.storage.key).catch(() => {})
+function dropBlobs(list: Attachment[]) {
+  for (const attachment of list) {
+    if (attachment.storage.provider === 'remote') {
+      void deleteRemoteAttachment(attachment).catch((error) => {
+        console.warn('[supabase] attachment delete failed', error)
+      })
+    } else {
+      void fileStorage.delete(attachment.storage.key).catch((error) => {
+        console.warn('[local] attachment delete failed', error)
+      })
+    }
+  }
+}
+
+async function addAttachment(attachment: Attachment): Promise<void> {
+  if (attachment.storage.provider === 'remote') {
+    await saveRemoteAttachment(attachment)
   }
 
-  function addAttachment(a: Attachment) {
-    setState((prev) => (prev.attachments.some((x) => x.id === a.id) ? prev : { ...prev, attachments: [...prev.attachments, a] }))
-  }
+  setState((prev) =>
+    prev.attachments.some((item) => item.id === attachment.id)
+      ? prev
+      : { ...prev, attachments: [...prev.attachments, attachment] },
+  )
+}
 
-  function removeAttachment(id: string) {
-    const target = state.attachments.find((a) => a.id === id)
-    if (target) dropBlobs([target])
-    setState((prev) => ({ ...prev, attachments: prev.attachments.filter((a) => a.id !== id) }))
-  }
+async function removeAttachment(id: string): Promise<void> {
+  const target = state.attachments.find((attachment) => attachment.id === id)
+  if (!target) return
 
-  function cascadeAttachments(match: (a: Attachment) => boolean) {
-    dropBlobs(state.attachments.filter(match))
-    return (prev: AppState) => ({ ...prev, attachments: prev.attachments.filter((a) => !match(a)) })
-  }
+  try {
+    if (target.storage.provider === 'remote') {
+      await deleteRemoteAttachment(target)
+    } else {
+      await fileStorage.delete(target.storage.key)
+    }
 
+    setState((prev) => ({
+      ...prev,
+      attachments: prev.attachments.filter((attachment) => attachment.id !== id),
+    }))
+  } catch (error) {
+    console.warn('[attachments] remove failed', error)
+  }
+}
+
+function cascadeAttachments(match: (attachment: Attachment) => boolean) {
+  dropBlobs(state.attachments.filter(match))
+  return (prev: AppState) => ({
+    ...prev,
+    attachments: prev.attachments.filter((attachment) => !match(attachment)),
+  })
+}
   function deleteCourse(courseId: string) {
     const cascade = cascadeAttachments((a) => a.courseId === courseId || (a.entityType === 'course' && a.entityId === courseId))
     setState((prev) => ({
