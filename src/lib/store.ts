@@ -28,6 +28,12 @@ import {
   saveRemoteMaterial,
 } from './materialsRemote'
 
+import {
+  deleteRemoteNote,
+  fetchNotes,
+  saveRemoteNote,
+} from './notesRemote'
+
 const STORAGE_KEY = 'student-os-v2'
 
 // Phase 2E-E: portfolioItems is the single source; legacy `portfolio` entries are copied in once (by id) and left untouched.
@@ -398,6 +404,33 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       })
       .catch((error) => {
         console.warn('[supabase] materials unavailable, using local data', error)
+      })
+
+    return () => {
+      alive = false
+    }
+  }, [])
+    // Read notes from Supabase and merge them with local notes.
+  useEffect(() => {
+    let alive = true
+
+    fetchNotes()
+      .then((remote) => {
+        if (!alive || remote.length === 0) return
+
+        setState((prev) => {
+          const byId = new Map(prev.notes.map((note) => [note.id, note]))
+
+          for (const note of remote) {
+            const local = byId.get(note.id)
+            byId.set(note.id, local ? { ...local, ...note } : note)
+          }
+
+          return { ...prev, notes: [...byId.values()] }
+        })
+      })
+      .catch((error) => {
+        console.warn('[supabase] notes unavailable, using local data', error)
       })
 
     return () => {
@@ -1204,28 +1237,59 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setState((prev) => ({ ...prev, cvSkills: skills }))
   }
 
-  function addNote(data: Omit<Note, 'id' | 'createdAt'>) {
+   function addNote(data: Omit<Note, 'id' | 'createdAt'>) {
     let semesterId = data.semesterId
-    if (!semesterId && data.courseId) semesterId = getCourse(data.courseId)?.semesterId
+    if (!semesterId && data.courseId) {
+      semesterId = getCourse(data.courseId)?.semesterId
+    }
+
     const note: Note = {
       ...data,
       semesterId: semesterId ?? state.activeSemesterId,
       id: uid(),
       createdAt: new Date().toISOString(),
     }
+
     setState((prev) => ({ ...prev, notes: [...prev.notes, note] }))
+
+    void saveRemoteNote(note).catch((error) => {
+      console.warn('[supabase] note save failed', error)
+    })
   }
 
-  function updateNote(id: string, fields: Partial<Omit<Note, 'id' | 'createdAt'>>) {
+  function updateNote(
+    id: string,
+    fields: Partial<Omit<Note, 'id' | 'createdAt'>>,
+  ) {
+    const current = state.notes.find((note) => note.id === id)
+    if (!current) return
+
+    const next = { ...current, ...fields }
+
     setState((prev) => ({
       ...prev,
-      notes: prev.notes.map((n) => (n.id === id ? { ...n, ...fields } : n)),
+      notes: prev.notes.map((note) => (note.id === id ? next : note)),
     }))
+
+    void saveRemoteNote(next).catch((error) => {
+      console.warn('[supabase] note update failed', error)
+    })
   }
 
   function deleteNote(id: string) {
-    const cascade = cascadeAttachments((a) => a.entityType === 'note' && a.entityId === id)
-    setState((prev) => ({ ...cascade(prev), notes: prev.notes.filter((n) => n.id !== id) }))
+    const cascade = cascadeAttachments(
+      (attachment) =>
+        attachment.entityType === 'note' && attachment.entityId === id,
+    )
+
+    setState((prev) => ({
+      ...cascade(prev),
+      notes: prev.notes.filter((note) => note.id !== id),
+    }))
+
+    void deleteRemoteNote(id).catch((error) => {
+      console.warn('[supabase] note delete failed', error)
+    })
   }
 
   function setActiveSemester(semesterId: string) {
