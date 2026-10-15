@@ -39,6 +39,10 @@ const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
+  label: 'Personal',
+  items: [{ to: '/personal', label: 'Personal Life', icon: 'star' }],
+  },
+  {
     label: 'Insights',
     items: [
       { to: '/analytics', label: 'Analytics', icon: 'bar-chart-2' },
