@@ -34,6 +34,12 @@ import {
   saveRemoteNote,
 } from './notesRemote'
 
+import {
+  deleteRemoteCertificate,
+  fetchCertificates,
+  saveRemoteCertificate,
+} from './certificatesRemote'
+
 const STORAGE_KEY = 'student-os-v2'
 
 // Phase 2E-E: portfolioItems is the single source; legacy `portfolio` entries are copied in once (by id) and left untouched.
@@ -437,6 +443,59 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       alive = false
     }
   }, [])
+  
+    // Read certificates from Supabase and merge them with the local cache.
+  useEffect(() => {
+    let alive = true
+    const localAtStart = state.certificates
+
+    fetchCertificates()
+      .then(async (remote) => {
+        if (!alive) return
+
+        // Copy older local-only certificates to Supabase.
+        const remoteIds = new Set(remote.map((certificate) => certificate.id))
+        for (const certificate of localAtStart) {
+          if (remoteIds.has(certificate.id)) continue
+
+          try {
+            await saveRemoteCertificate(certificate)
+          } catch (error) {
+            console.warn(
+              '[supabase] could not migrate local certificate',
+              certificate.id,
+              error,
+            )
+          }
+        }
+
+        if (!alive) return
+
+        setState((prev) => {
+          const byId = new Map(
+            prev.certificates.map((certificate) => [certificate.id, certificate]),
+          )
+
+          // Supabase wins if the same certificate exists in both places.
+          for (const certificate of remote) {
+            byId.set(certificate.id, {
+              ...byId.get(certificate.id),
+              ...certificate,
+            })
+          }
+
+          return { ...prev, certificates: [...byId.values()] }
+        })
+      })
+      .catch((error) => {
+        console.warn('[supabase] certificates unavailable, using local data', error)
+      })
+
+    return () => {
+      alive = false
+    }
+  }, [])
+  
   // Courses + grade components live in Supabase; localStorage keeps a full local cache and everything else.
   const sigs = useRef(new Map<string, string>())
   const queue = useRef<Promise<void>>(Promise.resolve())
@@ -1162,40 +1221,72 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     })
   }
 
-  function resolveCertificate(data: CertificateInput): CertificateInput {
-    const sem = data.courseId ? getCourse(data.courseId)?.semesterId : undefined
-    return { ...data, courseId: sem ? data.courseId : undefined, semesterId: sem ?? data.semesterId }
-  }
-
-  function addCertificate(data: CertificateInput): Certificate {
+   function addCertificate(data: CertificateInput): Certificate {
     const now = new Date().toISOString()
-    const cert: Certificate = { ...resolveCertificate(data), id: uid(), createdAt: now, updatedAt: now }
-    setState((prev) => ({ ...prev, certificates: [...prev.certificates, cert] }))
-    return cert
+    const certificate: Certificate = {
+      ...resolveCertificate(data),
+      id: uid(),
+      createdAt: now,
+      updatedAt: now,
+    }
+
+    setState((prev) => ({
+      ...prev,
+      certificates: [...prev.certificates, certificate],
+    }))
+
+    void saveRemoteCertificate(certificate).catch((error) => {
+      console.warn('[supabase] certificate save failed', error)
+    })
+
+    return certificate
   }
 
   function updateCertificate(id: string, data: CertificateInput) {
-    const next = resolveCertificate(data)
+    const current = state.certificates.find((certificate) => certificate.id === id)
+    if (!current) return
+
+    const certificate: Certificate = {
+      ...current,
+      ...resolveCertificate(data),
+      updatedAt: new Date().toISOString(),
+    }
+
     setState((prev) => ({
       ...prev,
-      certificates: prev.certificates.map((c) => (c.id === id ? { ...c, ...next, updatedAt: new Date().toISOString() } : c)),
+      certificates: prev.certificates.map((item) =>
+        item.id === id ? certificate : item,
+      ),
     }))
+
+    void saveRemoteCertificate(certificate).catch((error) => {
+      console.warn('[supabase] certificate update failed', error)
+    })
   }
 
   function deleteCertificate(id: string) {
-    const cascade = cascadeAttachments((a) => a.entityType === 'certificate' && a.entityId === id)
+    const cascade = cascadeAttachments(
+      (attachment) =>
+        attachment.entityType === 'certificate' && attachment.entityId === id,
+    )
+
     setState((prev) => ({
       ...cascade(prev),
-      certificates: prev.certificates.filter((c) => c.id !== id),
-      cvEntries: prev.cvEntries.filter((e) => !(e.type === 'certificate' && e.sourceId === id)),
-      portfolioItems: prev.portfolioItems.map((p) => {
-        if (!p.certificateIds?.includes(id)) return p
-        const ids = p.certificateIds.filter((x) => x !== id)
-        return { ...p, certificateIds: ids.length ? ids : undefined }
+      certificates: prev.certificates.filter((certificate) => certificate.id !== id),
+      cvEntries: prev.cvEntries.filter(
+        (entry) => !(entry.type === 'certificate' && entry.sourceId === id),
+      ),
+      portfolioItems: prev.portfolioItems.map((item) => {
+        if (!item.certificateIds?.includes(id)) return item
+        const ids = item.certificateIds.filter((certificateId) => certificateId !== id)
+        return { ...item, certificateIds: ids.length ? ids : undefined }
       }),
     }))
-  }
 
+    void deleteRemoteCertificate(id).catch((error) => {
+      console.warn('[supabase] certificate delete failed', error)
+    })
+  }
   function resolvePortfolioItem(data: PortfolioItemInput, certs: Certificate[]): PortfolioItemInput {
     const sem = data.courseId ? getCourse(data.courseId)?.semesterId : undefined
     const known = new Set(certs.map((c) => c.id))
