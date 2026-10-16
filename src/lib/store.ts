@@ -45,6 +45,18 @@ import {
   saveRemoteCertificate,
 } from './certificatesRemote'
 
+import {
+  deletePortfolioItemRemote,
+  fetchCvEntries,
+  fetchCvProfile,
+  fetchCvSkills,
+  fetchPortfolioItems,
+  saveCvEntries,
+  saveCvProfile,
+  saveCvSkills,
+  savePortfolioItem,
+} from './portfolioCvRemote'
+
 const STORAGE_KEY = 'student-os-v2'
 
 // Phase 2E-E: portfolioItems is the single source; legacy `portfolio` entries are copied in once (by id) and left untouched.
@@ -526,6 +538,60 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       alive = false
     }
   }, [])
+
+    useEffect(() => {
+    let alive = true
+    const localItems = state.portfolioItems
+    const localProfile = state.cvProfile
+    const localEntries = state.cvEntries
+    const localSkills = state.cvSkills
+
+    Promise.all([
+      fetchPortfolioItems(),
+      fetchCvProfile(),
+      fetchCvEntries(),
+      fetchCvSkills(),
+    ])
+      .then(async ([remoteItems, remoteProfile, remoteEntries, remoteSkills]) => {
+        if (!alive) return
+
+        const remoteIds = new Set(remoteItems.map((item) => item.id))
+        for (const item of localItems) {
+          if (!remoteIds.has(item.id)) {
+            await savePortfolioItem(item)
+          }
+        }
+
+        if (!remoteProfile) await saveCvProfile(localProfile)
+        if (remoteEntries.length === 0 && localEntries.length) {
+          await saveCvEntries(localEntries)
+        }
+        if (remoteSkills.length === 0 && localSkills.length) {
+          await saveCvSkills(localSkills)
+        }
+
+        if (!alive) return
+        setState((prev) => {
+          const byId = new Map(localItems.map((item) => [item.id, item]))
+          for (const item of remoteItems) byId.set(item.id, item)
+
+          return {
+            ...prev,
+            portfolioItems: [...byId.values()],
+            cvProfile: remoteProfile ?? localProfile,
+            cvEntries: remoteEntries.length ? remoteEntries : localEntries,
+            cvSkills: remoteSkills.length ? remoteSkills : localSkills,
+          }
+        })
+      })
+      .catch((error) => {
+        console.warn('[supabase] portfolio/CV data unavailable', error)
+      })
+
+    return () => {
+      alive = false
+    }
+  }, [])
   
   // Courses + grade components live in Supabase; localStorage keeps a full local cache and everything else.
   const sigs = useRef(new Map<string, string>())
@@ -930,51 +996,128 @@ function cascadeAttachments(match: (attachment: Attachment) => boolean) {
     attachments: prev.attachments.filter((attachment) => !match(attachment)),
   })
 }
-  function deleteCourse(courseId: string) {
-    const cascade = cascadeAttachments((a) => a.courseId === courseId || (a.entityType === 'course' && a.entityId === courseId))
-    setState((prev) => ({
-      ...cascade(prev),
-      notes: prev.notes.filter((n) => n.courseId !== courseId),
-      certificates: prev.certificates.map((c) => (c.courseId === courseId ? { ...c, courseId: undefined } : c)),
-      portfolioItems: prev.portfolioItems.map((p) => (p.courseId === courseId ? { ...p, courseId: undefined } : p)),
-      submissions: prev.submissions.filter((s) => s.courseId !== courseId),
-      academicYears: prev.academicYears.map((year) => ({
-        ...year,
-        semesters: year.semesters.map((sem) => ({
-          ...sem,
-          courses: sem.courses.filter((c) => c.id !== courseId),
-        })) as [typeof year.semesters[0], typeof year.semesters[1]],
-      })),
-    }))
-  }
+function deleteCourse(courseId: string) {
+  const cascade = cascadeAttachments(
+    (attachment) =>
+      attachment.courseId === courseId ||
+      (attachment.entityType === 'course' && attachment.entityId === courseId),
+  )
 
-  function moveCourse(courseId: string, newSemId: string) {
-    setState((prev) => {
-      let moved: Course | undefined
-      const withRemoved = prev.academicYears.map((year) => ({
-        ...year,
-        semesters: year.semesters.map((sem) => {
-          const target = sem.courses.find((c) => c.id === courseId)
-          if (target) moved = { ...target, semesterId: newSemId }
-          return { ...sem, courses: sem.courses.filter((c) => c.id !== courseId) }
-        }) as [typeof year.semesters[0], typeof year.semesters[1]],
-      }))
-      if (!moved) return prev
-      const mc = moved
-      return {
-        ...prev,
-        certificates: prev.certificates.map((c) => (c.courseId === courseId ? { ...c, semesterId: newSemId } : c)),
-        portfolioItems: prev.portfolioItems.map((p) => (p.courseId === courseId ? { ...p, semesterId: newSemId } : p)),
-        academicYears: withRemoved.map((year) => ({
-          ...year,
-          semesters: year.semesters.map((sem) =>
-            sem.id === newSemId ? { ...sem, courses: [...sem.courses, mc] } : sem
-          ) as [typeof year.semesters[0], typeof year.semesters[1]],
-        })),
-      }
+  const certificatesToUpdate = state.certificates
+    .filter((certificate) => certificate.courseId === courseId)
+    .map((certificate) => ({ ...certificate, courseId: undefined }))
+
+  const portfolioItemsToUpdate = state.portfolioItems
+    .filter((item) => item.courseId === courseId)
+    .map((item) => ({ ...item, courseId: undefined }))
+
+  setState((prev) => ({
+    ...cascade(prev),
+    notes: prev.notes.filter((note) => note.courseId !== courseId),
+    certificates: prev.certificates.map(
+      (certificate) =>
+        certificatesToUpdate.find((updated) => updated.id === certificate.id) ??
+        certificate,
+    ),
+    portfolioItems: prev.portfolioItems.map(
+      (item) =>
+        portfolioItemsToUpdate.find((updated) => updated.id === item.id) ??
+        item,
+    ),
+    submissions: prev.submissions.filter(
+      (submission) => submission.courseId !== courseId,
+    ),
+    academicYears: prev.academicYears.map((year) => ({
+      ...year,
+      semesters: year.semesters.map((semester) => ({
+        ...semester,
+        courses: semester.courses.filter((course) => course.id !== courseId),
+      })) as [typeof year.semesters[0], typeof year.semesters[1]],
+    })),
+  }))
+
+  for (const certificate of certificatesToUpdate) {
+    void saveRemoteCertificate(certificate).catch((error) => {
+      console.warn('[supabase] certificate course unlink failed', error)
     })
   }
 
+  for (const item of portfolioItemsToUpdate) {
+    void savePortfolioItem(item).catch((error) => {
+      console.warn('[supabase] portfolio course unlink failed', error)
+    })
+  }
+}
+
+function moveCourse(courseId: string, newSemId: string) {
+  const courseToMove = state.academicYears
+    .flatMap((year) => year.semesters)
+    .flatMap((semester) => semester.courses)
+    .find((course) => course.id === courseId)
+
+  const targetSemesterExists = state.academicYears
+    .flatMap((year) => year.semesters)
+    .some((semester) => semester.id === newSemId)
+
+  if (!courseToMove || !targetSemesterExists) return
+
+  const movedCourse: Course = {
+    ...courseToMove,
+    semesterId: newSemId,
+  }
+
+  const certificatesToUpdate = state.certificates
+    .filter((certificate) => certificate.courseId === courseId)
+    .map((certificate) => ({ ...certificate, semesterId: newSemId }))
+
+  const portfolioItemsToUpdate = state.portfolioItems
+    .filter((item) => item.courseId === courseId)
+    .map((item) => ({ ...item, semesterId: newSemId }))
+
+  setState((prev) => {
+    const yearsWithoutCourse = prev.academicYears.map((year) => ({
+      ...year,
+      semesters: year.semesters.map((semester) => ({
+        ...semester,
+        courses: semester.courses.filter((course) => course.id !== courseId),
+      })) as [typeof year.semesters[0], typeof year.semesters[1]],
+    }))
+
+    return {
+      ...prev,
+      certificates: prev.certificates.map(
+        (certificate) =>
+          certificatesToUpdate.find((updated) => updated.id === certificate.id) ??
+          certificate,
+      ),
+      portfolioItems: prev.portfolioItems.map(
+        (item) =>
+          portfolioItemsToUpdate.find((updated) => updated.id === item.id) ??
+          item,
+      ),
+      academicYears: yearsWithoutCourse.map((year) => ({
+        ...year,
+        semesters: year.semesters.map((semester) =>
+          semester.id === newSemId
+            ? { ...semester, courses: [...semester.courses, movedCourse] }
+            : semester,
+        ) as [typeof year.semesters[0], typeof year.semesters[1]],
+      })),
+    }
+  })
+
+  for (const certificate of certificatesToUpdate) {
+    void saveRemoteCertificate(certificate).catch((error) => {
+      console.warn('[supabase] certificate semester update failed', error)
+    })
+  }
+
+  for (const item of portfolioItemsToUpdate) {
+    void savePortfolioItem(item).catch((error) => {
+      console.warn('[supabase] portfolio semester update failed', error)
+    })
+  }
+}
    function addTask(task: Omit<Task, 'id'>) {
     let semesterId = task.semesterId
 
@@ -1330,29 +1473,55 @@ const certificate: Certificate = {
     })
   }
 
-  function deleteCertificate(id: string) {
-    const cascade = cascadeAttachments(
-      (attachment) =>
-        attachment.entityType === 'certificate' && attachment.entityId === id,
-    )
+function deleteCertificate(id: string) {
+  const cascade = cascadeAttachments(
+    (attachment) =>
+      attachment.entityType === 'certificate' && attachment.entityId === id,
+  )
 
-    setState((prev) => ({
-      ...cascade(prev),
-      certificates: prev.certificates.filter((certificate) => certificate.id !== id),
-      cvEntries: prev.cvEntries.filter(
-        (entry) => !(entry.type === 'certificate' && entry.sourceId === id),
-      ),
-      portfolioItems: prev.portfolioItems.map((item) => {
-        if (!item.certificateIds?.includes(id)) return item
-        const ids = item.certificateIds.filter((certificateId) => certificateId !== id)
-        return { ...item, certificateIds: ids.length ? ids : undefined }
-      }),
-    }))
+  const cvEntriesToSave = state.cvEntries.filter(
+    (entry) => !(entry.type === 'certificate' && entry.sourceId === id),
+  )
 
-    void deleteRemoteCertificate(id).catch((error) => {
-      console.warn('[supabase] certificate delete failed', error)
+  const portfolioItemsToSave = state.portfolioItems
+    .filter((item) => item.certificateIds?.includes(id))
+    .map((item) => {
+      const certificateIds = item.certificateIds!.filter(
+        (certificateId) => certificateId !== id,
+      )
+      return {
+        ...item,
+        certificateIds: certificateIds.length ? certificateIds : undefined,
+      }
+    })
+
+  setState((prev) => ({
+    ...cascade(prev),
+    certificates: prev.certificates.filter(
+      (certificate) => certificate.id !== id,
+    ),
+    cvEntries: cvEntriesToSave,
+    portfolioItems: prev.portfolioItems.map(
+      (item) =>
+        portfolioItemsToSave.find((updated) => updated.id === item.id) ?? item,
+    ),
+  }))
+
+  void deleteRemoteCertificate(id).catch((error) => {
+    console.warn('[supabase] certificate delete failed', error)
+  })
+
+  void saveCvEntries(cvEntriesToSave).catch((error) => {
+    console.warn('[supabase] CV entries update failed', error)
+  })
+
+  for (const item of portfolioItemsToSave) {
+    void savePortfolioItem(item).catch((error) => {
+      console.warn('[supabase] portfolio certificate update failed', error)
     })
   }
+}
+
   function resolvePortfolioItem(data: PortfolioItemInput, certs: Certificate[]): PortfolioItemInput {
     const sem = data.courseId ? getCourse(data.courseId)?.semesterId : undefined
     const known = new Set(certs.map((c) => c.id))
@@ -1360,38 +1529,85 @@ const certificate: Certificate = {
     return { ...data, courseId: sem ? data.courseId : undefined, semesterId: sem ?? data.semesterId, certificateIds: ids.length ? ids : undefined }
   }
 
-  function addPortfolioItem(data: PortfolioItemInput): PortfolioItem {
-    const now = new Date().toISOString()
-    const item: PortfolioItem = { ...resolvePortfolioItem(data, state.certificates), id: uid(), createdAt: now, updatedAt: now }
-    setState((prev) => ({ ...prev, portfolioItems: [...prev.portfolioItems, item] }))
-    return item
+function addPortfolioItem(data: PortfolioItemInput): PortfolioItem {
+  const now = new Date().toISOString()
+  const item: PortfolioItem = {
+    ...resolvePortfolioItem(data, state.certificates),
+    id: uid(),
+    createdAt: now,
+    updatedAt: now,
   }
 
+  setState((prev) => ({
+    ...prev,
+    portfolioItems: [...prev.portfolioItems, item],
+  }))
+
+  void savePortfolioItem(item).catch((error) => {
+    console.warn('[supabase] portfolio save failed', error)
+  })
+
+  return item
+}
   function updatePortfolioItem(id: string, data: PortfolioItemInput) {
-    const next = resolvePortfolioItem(data, state.certificates)
+    const current = state.portfolioItems.find((item) => item.id === id)
+    if (!current) return
+
+    const item: PortfolioItem = {
+      ...current,
+      ...resolvePortfolioItem(data, state.certificates),
+      updatedAt: new Date().toISOString(),
+    }
     setState((prev) => ({
       ...prev,
-      portfolioItems: prev.portfolioItems.map((p) => (p.id === id ? { ...p, ...next, updatedAt: new Date().toISOString() } : p)),
+      portfolioItems: prev.portfolioItems.map((row) => row.id === id ? item : row),
     }))
+    void savePortfolioItem(item).catch((error) =>
+      console.warn('[supabase] portfolio update failed', error),
+    )
   }
 
   function deletePortfolioItem(id: string) {
-    const cascade = cascadeAttachments((a) => a.entityType === 'portfolio' && a.entityId === id)
+    const cascade = cascadeAttachments(
+      (attachment) => attachment.entityType === 'portfolio' && attachment.entityId === id,
+    )
+    const entries = state.cvEntries.filter(
+      (entry) => !(entry.type === 'portfolio' && entry.sourceId === id),
+    )
+
     setState((prev) => ({
       ...cascade(prev),
-      portfolioItems: prev.portfolioItems.filter((p) => p.id !== id),
-      cvEntries: prev.cvEntries.filter((e) => !(e.type === 'portfolio' && e.sourceId === id)),
+      portfolioItems: prev.portfolioItems.filter((item) => item.id !== id),
+      cvEntries: entries,
     }))
+    void deletePortfolioItemRemote(id).catch((error) =>
+      console.warn('[supabase] portfolio delete failed', error),
+    )
+    void saveCvEntries(entries).catch((error) =>
+      console.warn('[supabase] CV entries update failed', error),
+    )
   }
 
   function updateCvProfile(patch: Partial<CvProfile>) {
-    setState((prev) => ({ ...prev, cvProfile: { ...prev.cvProfile, ...patch } }))
+    const profile = { ...state.cvProfile, ...patch }
+    setState((prev) => ({ ...prev, cvProfile: profile }))
+    void saveCvProfile(profile).catch((error) =>
+      console.warn('[supabase] CV profile save failed', error),
+    )
   }
+
   function setCvEntries(entries: CvEntry[]) {
     setState((prev) => ({ ...prev, cvEntries: entries }))
+    void saveCvEntries(entries).catch((error) =>
+      console.warn('[supabase] CV entries save failed', error),
+    )
   }
+
   function setCvSkills(skills: string[]) {
     setState((prev) => ({ ...prev, cvSkills: skills }))
+    void saveCvSkills(skills).catch((error) =>
+      console.warn('[supabase] CV skills save failed', error),
+    )
   }
 
    function addNote(data: Omit<Note, 'id' | 'createdAt'>) {
@@ -1468,6 +1684,9 @@ const certificate: Certificate = {
       updatedAt: now,
     }
     setState((prev) => ({ ...prev, portfolioItems: [...prev.portfolioItems, item] }))
+        void savePortfolioItem(item).catch((error) => {
+      console.warn('[supabase] portfolio save failed', error)
+    })
   }
 
   function resetState() {
