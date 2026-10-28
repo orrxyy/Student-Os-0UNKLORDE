@@ -15,7 +15,7 @@ import { getSemesterLabel } from '../lib/selectors'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type InputTab = 'grade' | 'task' | 'material' | 'note' | 'certificate' | 'portfolio'
+type InputTab = 'grade' | 'task' | 'material' | 'note' | 'certificate' | 'portfolio' | 'finance'
 type GradeMode = 'score' | 'letter'
 
 const LETTERS = ['A', 'A-', 'B+', 'B', 'B-', 'C+', 'C', 'C-', 'D', 'F']
@@ -447,6 +447,7 @@ function ManualForms({ onClose }: { onClose: () => void }) {
     { key: 'note', label: 'Note', icon: '📝' },
     { key: 'certificate', label: 'Certificate', icon: '🏅' },
     { key: 'portfolio', label: 'Portfolio Item', icon: '💼' },
+    { key: 'finance', label: 'Finance', icon: 'wallet' },
   ]
   return (
     <div>
