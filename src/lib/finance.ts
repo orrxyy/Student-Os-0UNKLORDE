@@ -1,6 +1,8 @@
 import { useSyncExternalStore } from 'react'
 import bcaLogo from '../assets/finance/bca.png'
 import gopayLogo from '../assets/finance/gopay.png'
+import { useEffect, useSyncExternalStore } from 'react'
+import { supabase } from './supabase'
 
 // UI prototype only: in-memory store shared by the Finance page and dashboard widget. No bank connections.
 
@@ -14,6 +16,7 @@ export interface Account {
   balance: number
   note: string
   logo?: string
+  isDefault?: boolean
 }
 
 export type TxKind = 'income' | 'expense' | 'transfer'
@@ -39,6 +42,8 @@ interface FinanceState {
   accounts: Account[]
   transactions: Transaction[]
   budget: number | null
+  loading: boolean
+  error: string | null
 }
 
 // ── Formatting ──────────────────────────────────────────────────────────────
@@ -70,108 +75,243 @@ export function fmtTxDate(date: string) {
   return new Date(y, m - 1, d).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
-// ── Seed data ───────────────────────────────────────────────────────────────
-function seed(): FinanceState {
-  const now = new Date()
-  const today = now.getDate()
-  const at = (monthsAgo: number, day: number) => {
-    const d = new Date(now.getFullYear(), now.getMonth() - monthsAgo, 1)
-    const max = monthsAgo === 0 ? today : new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()
-    d.setDate(Math.min(day, max))
-    return toDateKey(d)
-  }
-  let i = 0
-  const tx = (
-    kind: TxKind, monthsAgo: number, day: number, description: string, category: string,
-    amount: number, accountId: string, toAccountId?: string,
-  ): Transaction => ({ id: `s${++i}`, kind, amount, date: at(monthsAgo, day), description, category, accountId, toAccountId, note: '', sample: true })
+// ── Supabase-backed store ───────────────────────────────────────────────────
+type DbRow = Record<string, unknown>
+
+const emptyState: FinanceState = {
+  accounts: [],
+  transactions: [],
+  budget: null,
+  loading: true,
+  error: null,
+}
+
+let state: FinanceState = emptyState
+const listeners = new Set<() => void>()
+const emit = () => listeners.forEach((listener) => listener())
+const setState = (next: FinanceState) => {
+  state = next
+  emit()
+}
+
+let started = false
+let loadVersion = 0
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : 'Finance data could not be saved.'
+}
+
+function accountFromRow(row: DbRow): Account {
+  const name = String(row.name)
+  const normalizedName = name.toLowerCase()
 
   return {
-    budget: 1_500_000,
-    accounts: [
-      { id: 'bca', name: 'BCA', type: 'Bank', balance: 2_500_000, note: 'Main student account', logo: bcaLogo },
-      { id: 'gopay', name: 'GoPay', type: 'E-Wallet', balance: 350_000, note: 'Daily spending', logo: gopayLogo },
-      { id: 'emergency', name: 'Emergency Fund', type: 'Savings', balance: 1_200_000, note: 'Do not touch unless needed' },
-    ],
-    transactions: [
-      tx('income', 0, 1, 'Monthly allowance (sample)', 'Allowance', 3_000_000, 'bca'),
-      tx('expense', 0, 2, 'Kost payment (sample)', 'Bills', 800_000, 'bca'),
-      tx('expense', 0, 3, 'Lunch at canteen (sample)', 'Food', 35_000, 'gopay'),
-      tx('expense', 0, 5, 'Printing thesis draft (sample)', 'Study', 60_000, 'gopay'),
-      tx('transfer', 0, 6, 'Top up GoPay (sample)', TRANSFER_CATEGORY, 300_000, 'bca', 'gopay'),
-      tx('expense', 0, 8, 'Grab to campus (sample)', 'Transport', 28_000, 'gopay'),
-      tx('expense', 0, 10, 'Internet data package (sample)', 'Bills', 95_000, 'gopay'),
-      tx('income', 0, 12, 'Tutoring session (sample)', 'Freelance', 250_000, 'gopay'),
-      tx('expense', 0, 14, 'Movie night (sample)', 'Entertainment', 75_000, 'gopay'),
-      tx('expense', 0, 16, 'Textbook: Linear Algebra (sample)', 'Study', 185_000, 'bca'),
-      tx('transfer', 0, 18, 'Save to emergency fund (sample)', TRANSFER_CATEGORY, 200_000, 'bca', 'emergency'),
-      tx('expense', 0, 19, 'Dinner with friends (sample)', 'Food', 110_000, 'gopay'),
-      tx('expense', 0, 21, 'Pharmacy (sample)', 'Health', 48_000, 'bca'),
-      tx('income', 1, 1, 'Monthly allowance (sample)', 'Allowance', 3_000_000, 'bca'),
-      tx('expense', 1, 2, 'Kost payment (sample)', 'Bills', 800_000, 'bca'),
-      tx('expense', 1, 6, 'Groceries (sample)', 'Food', 220_000, 'bca'),
-      tx('expense', 1, 11, 'KRL commuter pass (sample)', 'Transport', 140_000, 'gopay'),
-      tx('expense', 1, 15, 'Online course fee (sample)', 'Study', 350_000, 'bca'),
-      tx('expense', 1, 20, 'New backpack (sample)', 'Shopping', 275_000, 'bca'),
-      tx('expense', 1, 25, 'Cafe study session (sample)', 'Food', 64_000, 'gopay'),
-      tx('income', 2, 1, 'Monthly allowance (sample)', 'Allowance', 3_000_000, 'bca'),
-      tx('income', 2, 14, 'Scholarship disbursement (sample)', 'Scholarship', 1_000_000, 'bca'),
-      tx('expense', 2, 2, 'Kost payment (sample)', 'Bills', 800_000, 'bca'),
-      tx('expense', 2, 9, 'Groceries (sample)', 'Food', 190_000, 'bca'),
-      tx('expense', 2, 17, 'Concert ticket (sample)', 'Entertainment', 450_000, 'bca'),
-      tx('expense', 2, 24, 'Ojek online (sample)', 'Transport', 82_000, 'gopay'),
-    ],
+    id: String(row.id),
+    name,
+    type: row.type as AccountType,
+    balance: Number(row.balance),
+    note: String(row.note ?? ''),
+    isDefault: Boolean(row.is_default),
+    logo: normalizedName === 'bca' ? bcaLogo : normalizedName === 'gopay' ? gopayLogo : undefined,
   }
 }
 
-// ── Store ───────────────────────────────────────────────────────────────────
-let state: FinanceState = seed()
-const listeners = new Set<() => void>()
-const emit = () => listeners.forEach((l) => l())
-const set = (next: FinanceState) => { state = next; emit() }
-let counter = 0
-const uid = (p: string) => `${p}_${Date.now().toString(36)}${(counter++).toString(36)}`
+function transactionFromRow(row: DbRow): Transaction {
+  return {
+    id: String(row.id),
+    kind: row.kind as TxKind,
+    amount: Number(row.amount),
+    date: String(row.transaction_date),
+    description: String(row.description ?? ''),
+    category: String(row.category),
+    accountId: String(row.account_id),
+    toAccountId: row.to_account_id ? String(row.to_account_id) : undefined,
+    note: String(row.note ?? ''),
+  }
+}
+
+async function ensureDefaultAccounts(userId: string) {
+  const { error } = await supabase.from('finance_accounts').upsert(
+    [
+      {
+        user_id: userId,
+        name: 'BCA',
+        type: 'Bank',
+        balance: 0,
+        note: '',
+        is_default: true,
+      },
+      {
+        user_id: userId,
+        name: 'GoPay',
+        type: 'E-Wallet',
+        balance: 0,
+        note: '',
+        is_default: true,
+      },
+    ],
+    { onConflict: 'user_id,name', ignoreDuplicates: true },
+  )
+
+  if (error) throw error
+}
+
+export async function refreshFinance() {
+  const version = ++loadVersion
+  setState({ ...state, loading: true, error: null })
+
+  try {
+    const { data: authData, error: authError } = await supabase.auth.getUser()
+    if (authError) throw authError
+
+    const user = authData.user
+    if (!user) {
+      if (version === loadVersion) setState({ ...emptyState, loading: false })
+      return
+    }
+
+    // BCA dan GoPay dibuat sekali untuk setiap user, selalu dengan saldo Rp0.
+    await ensureDefaultAccounts(user.id)
+
+    const [accountsResult, transactionsResult, budgetResult] = await Promise.all([
+      supabase.from('finance_accounts').select('*').order('created_at'),
+      supabase
+        .from('finance_transactions')
+        .select('*')
+        .order('transaction_date', { ascending: false })
+        .order('created_at', { ascending: false }),
+      supabase.from('finance_budgets').select('monthly_limit').maybeSingle(),
+    ])
+
+    if (accountsResult.error) throw accountsResult.error
+    if (transactionsResult.error) throw transactionsResult.error
+    if (budgetResult.error) throw budgetResult.error
+
+    if (version !== loadVersion) return
+
+    setState({
+      accounts: (accountsResult.data ?? []).map((row) => accountFromRow(row as DbRow)),
+      transactions: (transactionsResult.data ?? []).map((row) => transactionFromRow(row as DbRow)),
+      budget: budgetResult.data ? Number(budgetResult.data.monthly_limit) : null,
+      loading: false,
+      error: null,
+    })
+  } catch (error) {
+    if (version === loadVersion) {
+      setState({ ...state, loading: false, error: errorMessage(error) })
+    }
+  }
+}
+
+async function saveAndRefresh(
+  request: () => Promise<{ error: { message: string } | null }>,
+) {
+  try {
+    const result = await request()
+    if (result.error) throw result.error
+    await refreshFinance()
+    if (state.error) throw new Error(state.error)
+  } catch (error) {
+    setState({ ...state, loading: false, error: errorMessage(error) })
+    throw error
+  }
+}
 
 export function useFinance() {
-  return useSyncExternalStore(
-    (cb) => { listeners.add(cb); return () => { listeners.delete(cb) } },
+  const snapshot = useSyncExternalStore(
+    (callback) => {
+      listeners.add(callback)
+      return () => listeners.delete(callback)
+    },
     () => state,
+  )
+
+  useEffect(() => {
+    if (!started) {
+      started = true
+      void refreshFinance()
+    }
+  }, [])
+
+  return snapshot
+}
+
+export async function addAccount(
+  account: Omit<Account, 'id' | 'logo' | 'isDefault'>,
+) {
+  await saveAndRefresh(() =>
+    supabase.from('finance_accounts').insert({
+      name: account.name,
+      type: account.type,
+      balance: account.balance,
+      note: account.note,
+    }),
   )
 }
 
-export function addAccount(a: Omit<Account, 'id'>) {
-  set({ ...state, accounts: [...state.accounts, { ...a, id: uid('acc') }] })
-}
-export function updateAccount(id: string, patch: Partial<Omit<Account, 'id'>>) {
-  set({ ...state, accounts: state.accounts.map((a) => (a.id === id ? { ...a, ...patch } : a)) })
-}
-export function deleteAccount(id: string) {
-  set({ ...state, accounts: state.accounts.filter((a) => a.id !== id) })
-}
-export function setBudget(budget: number | null) {
-  set({ ...state, budget })
+export async function updateAccount(
+  id: string,
+  patch: Partial<Omit<Account, 'id' | 'logo' | 'isDefault'>>,
+) {
+  const account = state.accounts.find((item) => item.id === id)
+  if (!account) throw new Error('Account not found.')
+
+  const safePatch = account.isDefault
+    ? { balance: patch.balance, note: patch.note }
+    : patch
+
+  await saveAndRefresh(() =>
+    supabase
+      .from('finance_accounts')
+      .update({ ...safePatch, updated_at: new Date().toISOString() })
+      .eq('id', id),
+  )
 }
 
-function applyDelta(accounts: Account[], tx: Transaction, sign: 1 | -1): Account[] {
-  return accounts.map((a) => {
-    let d = 0
-    if (tx.kind === 'income' && a.id === tx.accountId) d += tx.amount
-    if (tx.kind === 'expense' && a.id === tx.accountId) d -= tx.amount
-    if (tx.kind === 'transfer') {
-      if (a.id === tx.accountId) d -= tx.amount
-      if (a.id === tx.toAccountId) d += tx.amount
-    }
-    return d ? { ...a, balance: a.balance + d * sign } : a
-  })
+export async function deleteAccount(id: string) {
+  const account = state.accounts.find((item) => item.id === id)
+  if (account?.isDefault) throw new Error('BCA and GoPay are default accounts and cannot be removed.')
+
+  await saveAndRefresh(() =>
+    supabase.from('finance_accounts').delete().eq('id', id),
+  )
 }
-export function addTransaction(t: Omit<Transaction, 'id'>) {
-  const tx = { ...t, id: uid('tx') }
-  set({ ...state, accounts: applyDelta(state.accounts, tx, 1), transactions: [tx, ...state.transactions] })
+
+export async function setBudget(budget: number | null) {
+  if (budget === null) {
+    await saveAndRefresh(() =>
+      supabase.from('finance_budgets').delete().not('user_id', 'is', null),
+    )
+    return
+  }
+
+  await saveAndRefresh(() =>
+    supabase.from('finance_budgets').upsert(
+      { monthly_limit: budget },
+      { onConflict: 'user_id' },
+    ),
+  )
 }
-export function deleteTransaction(id: string) {
-  const tx = state.transactions.find((t) => t.id === id)
-  if (!tx) return
-  set({ ...state, accounts: applyDelta(state.accounts, tx, -1), transactions: state.transactions.filter((t) => t.id !== id) })
+
+export async function addTransaction(transaction: Omit<Transaction, 'id' | 'sample'>) {
+  await saveAndRefresh(() =>
+    supabase.from('finance_transactions').insert({
+      kind: transaction.kind,
+      amount: transaction.amount,
+      transaction_date: transaction.date,
+      description: transaction.description,
+      category: transaction.category,
+      account_id: transaction.accountId,
+      to_account_id: transaction.toAccountId ?? null,
+      note: transaction.note,
+    }),
+  )
+}
+
+export async function deleteTransaction(id: string) {
+  await saveAndRefresh(() =>
+    supabase.from('finance_transactions').delete().eq('id', id),
+  )
 }
 
 // ── Selectors ───────────────────────────────────────────────────────────────
