@@ -39,8 +39,11 @@ const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
-  label: 'Personal',
-  items: [{ to: '/personal', label: 'Personal Life', icon: 'star' }],
+    label: 'Personal',
+    items: [
+      { to: '/personal', label: 'Personal Life', icon: 'star' },
+      { to: '/finance', label: 'Finance', icon: 'wallet' },
+    ],
   },
   {
     label: 'Insights',
