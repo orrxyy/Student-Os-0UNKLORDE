@@ -34,7 +34,7 @@ import { FinanceWidget } from '../components/FinanceWidget'
 import { SemesterSwitcher } from '../components/SemesterSwitcher'
 import { useShell } from '../components/layout/AppShell'
 import type { DayOfWeek, ClassSchedule, Course, Task } from '../types'
-import { FinanceWidget } from '../components/FinanceWidget'
+
 
 function useWIBClock() {
   const [now, setNow] = useState(() => new Date())
@@ -703,6 +703,7 @@ export function DashboardPage() {
                 )
               })}
             </div>
+            <FinanceWidget />
           </div>
 
           {/* ── Right panel ─────────────────────────────────── */}
