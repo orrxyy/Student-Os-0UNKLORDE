@@ -58,18 +58,28 @@ export function AccountModal({ open, onClose, account, hasTransactions }: { open
     setConfirmDelete(false)
   }, [open, account])
 
-  function save() {
-    const e: Record<string, string> = {}
-    if (!name.trim()) e.name = 'Give the asset a name.'
-    if (balance === '') e.balance = account ? 'Enter the current balance.' : 'Enter a starting balance (0 is fine).'
-    setErrors(e)
-    if (Object.keys(e).length) return
-    const data = { name: name.trim(), type, balance: Number(balance), note: note.trim() }
-    if (account) updateAccount(account.id, data)
-    else addAccount(data)
-    onClose()
+ async function save() {
+  const e: Record<string, string> = {}
+  if (!name.trim()) e.name = 'Give the asset a name.'
+  if (balance === '') e.balance = account ? 'Enter the current balance.' : 'Enter a starting balance (0 is fine).'
+  setErrors(e)
+  if (Object.keys(e).length) return
+
+  const data = {
+    name: name.trim(),
+    type,
+    balance: Number(balance),
+    note: note.trim(),
   }
 
+  try {
+    if (account) await updateAccount(account.id, data)
+    else await addAccount(data)
+    onClose()
+  } catch (error) {
+    setErrors({ submit: error instanceof Error ? error.message : 'Could not save account.' })
+  }
+}
   return (
     <Modal
       open={open}
@@ -77,7 +87,7 @@ export function AccountModal({ open, onClose, account, hasTransactions }: { open
       title={account ? `Edit ${account.name}` : 'Add another asset'}
       actions={
         <>
-          {account && (
+          {account && !account.isDefault && (
             <Button
               variant="ghost"
               className="mr-auto text-destructive"
@@ -91,6 +101,11 @@ export function AccountModal({ open, onClose, account, hasTransactions }: { open
           <Button onClick={save}>{account ? 'Save changes' : 'Add asset'}</Button>
         </>
       }
+      {account?.isDefault && (
+  <p className="text-xs text-muted-foreground">
+    BCA dan GoPay adalah aset bawaan. Nama dan tipenya tetap; saldo dan catatan bisa diedit.
+  </p>
+)}
     >
       <div className="space-y-4">
         {!account && <p className="text-xs text-muted-foreground">Track any account or asset: a bank, e-wallet, cash, savings, or investment.</p>}
@@ -146,7 +161,7 @@ export function TransactionModal({ kind, onClose, accounts }: { kind: TxKind | n
   const accOptions = [{ value: '', label: 'Select account' }, ...accounts.map((a) => ({ value: a.id, label: `${a.name} · ${fmtIDR(a.balance)}` }))]
   const acc = (id: string) => accounts.find((a) => a.id === id)
 
-  function save() {
+  async function save() {
     if (!kind) return
     const e: Record<string, string> = {}
     const value = Number(amount)
@@ -165,11 +180,23 @@ export function TransactionModal({ kind, onClose, accounts }: { kind: TxKind | n
     if (Object.keys(e).length) return
     const description =
       kind === 'transfer' ? `Transfer ${acc(from)?.name} → ${acc(to)?.name}` : note.trim() || `${category} ${kind}`
-    addTransaction({
-      kind, amount: value, date, accountId: from, toAccountId: kind === 'transfer' ? to : undefined,
-      category: kind === 'transfer' ? TRANSFER_CATEGORY : category, description, note: note.trim(),
-    })
-    onClose()
+try {
+  await addTransaction({
+    kind,
+    amount: value,
+    date,
+    accountId: from,
+    toAccountId: kind === 'transfer' ? to : undefined,
+    category: kind === 'transfer' ? TRANSFER_CATEGORY : category,
+    description,
+    note: note.trim(),
+  })
+  onClose()
+} catch (error) {
+  setErrors({
+    submit: error instanceof Error ? error.message : 'Could not save transaction.',
+  })
+}
   }
 
   const categories = kind === 'expense' ? EXPENSE_CATEGORIES : INCOME_CATEGORIES
