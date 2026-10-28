@@ -427,6 +427,27 @@ function PortfolioTab({ onSaved }: { onSaved: () => void }) {
   )
 }
 
+function FinanceTab({ onClose }: { onClose: () => void }) {
+  const navigate = useNavigate()
+
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-muted-foreground">
+        Catat pemasukan, pengeluaran, transfer, dan aset di Finance.
+      </p>
+      <Button
+        icon="wallet"
+        onClick={() => {
+          onClose()
+          navigate('/finance')
+        }}
+      >
+        Open Finance
+      </Button>
+    </div>
+  )
+}
+
 // ─── Main modal ───────────────────────────────────────────────────────────────
 
 interface Props {
@@ -447,7 +468,7 @@ function ManualForms({ onClose }: { onClose: () => void }) {
     { key: 'note', label: 'Note', icon: '📝' },
     { key: 'certificate', label: 'Certificate', icon: '🏅' },
     { key: 'portfolio', label: 'Portfolio Item', icon: '💼' },
-    { key: 'finance', label: 'Finance', icon: 'wallet' },
+    { key: 'finance', label: 'Finance', icon: '💰' },
   ]
   return (
     <div>
@@ -494,6 +515,7 @@ function ManualForms({ onClose }: { onClose: () => void }) {
       {tab === 'note' && <NoteForm courses={activeCourses} onClose={onClose} />}
       {tab === 'certificate' && <CertificateTab onSaved={onClose} />}
       {tab === 'portfolio' && <PortfolioTab onSaved={onClose} />}
+      {tab === 'finance' && <FinanceTab onClose={onClose} />}
     </div>
   )
 }
