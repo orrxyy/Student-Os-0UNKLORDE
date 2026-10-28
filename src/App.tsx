@@ -18,6 +18,7 @@ import { EmptyState } from './components/ui'
 import { LoginPage } from './pages/LoginPage'
 import { PersonalLifePage } from './pages/PersonalLifePage'
 import { UpdatePasswordPage } from './pages/UpdatePasswordPage'
+import { FinancePage } from './pages/FinancePage'
 
 function RequireAuth() {
   const [session, setSession] = useState<Session | null>(null)
@@ -84,6 +85,7 @@ const router = createBrowserRouter([
           { path: 'timeline', element: <TimelinePage /> },
           { path: 'settings', element: <Placeholder title="Settings" icon="settings" /> },
           { path: 'inbox', element: <Placeholder title="AI Inbox" icon="inbox" /> },
+          { path: 'finance', element: <FinancePage /> },
         ],
       },
     ],
