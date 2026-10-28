@@ -34,7 +34,7 @@ function AccountLogo({ account }: { account: Account }) {
 }
 
 export function FinancePage() {
-  const { accounts, transactions, budget } = useFinance()
+  const { accounts, transactions, budget, loading, error } = useFinance()
   const [hidden, setHidden] = useState(false)
   const [txKind, setTxKind] = useState<TxKind | null>(null)
   const [accountModal, setAccountModal] = useState<{ account: Account | null } | null>(null)
@@ -109,7 +109,16 @@ export function FinancePage() {
       </div>
 
       <p className="text-xs rounded border border-border bg-muted px-3 py-2 text-muted-foreground">
-        Prototype with sample data. Nothing is connected to a real bank, and changes reset when you refresh.
+        {loading && (
+  <p role="status" className="text-xs text-muted-foreground">
+    Loading finance data…
+  </p>
+)}
+{error && (
+  <p role="alert" className="text-xs text-destructive">
+    Finance error: {error}
+  </p>
+)}
       </p>
 
       {/* Total assets */}
@@ -348,7 +357,15 @@ export function FinancePage() {
         open={!!deleting}
         onClose={() => setDeleting(null)}
         title="Delete transaction?"
-        actions={<><Button variant="outline" onClick={() => setDeleting(null)}>Cancel</Button><Button variant="destructive" onClick={() => { if (deleting) deleteTransaction(deleting.id); setDeleting(null) }}>Delete</Button></>}
+        actions={<><Button variant="outline" onClick={() => setDeleting(null)}>Cancel</Button><Button variant="destructive" onClick={async () => {
+  if (!deleting) return
+  try {
+    await deleteTransaction(deleting.id)
+    setDeleting(null)
+  } catch {
+    // Pesan error akan tampil dari state `error` di halaman.
+  }
+}}
       >
         <p className="text-sm">“{deleting?.description}” ({deleting && fmtIDR(deleting.amount)}) will be removed and the account balance reversed.</p>
       </Modal>
