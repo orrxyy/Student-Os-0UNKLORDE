@@ -233,3 +233,299 @@ export function AccountModal({
     </Modal>
   )
 }
+// ── Transaction add ─────────────────────────────────────────────────────────
+
+const TRANSACTION_COPY: Record<TxKind, { title: string; action: string }> = {
+  income: { title: 'Add income', action: 'Add income' },
+  expense: { title: 'Add expense', action: 'Add expense' },
+  transfer: { title: 'Transfer between accounts', action: 'Transfer' },
+}
+
+export function TransactionModal({
+  kind,
+  onClose,
+  accounts,
+}: {
+  kind: TxKind | null
+  onClose: () => void
+  accounts: Account[]
+}) {
+  const [amount, setAmount] = useState('')
+  const [from, setFrom] = useState('')
+  const [to, setTo] = useState('')
+  const [category, setCategory] = useState('')
+  const [date, setDate] = useState(todayKey())
+  const [note, setNote] = useState('')
+  const [errors, setErrors] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    if (!kind) return
+
+    setAmount('')
+    setFrom(accounts[0]?.id ?? '')
+    setTo(accounts[1]?.id ?? '')
+    setCategory(kind === 'expense' ? EXPENSE_CATEGORIES[0] : INCOME_CATEGORIES[0])
+    setDate(todayKey())
+    setNote('')
+    setErrors({})
+  }, [kind, accounts])
+
+  if (!kind) return null
+
+  const accountOptions = [
+    { value: '', label: 'Select account' },
+    ...accounts.map((account) => ({
+      value: account.id,
+      label: `${account.name} · ${fmtIDR(account.balance)}`,
+    })),
+  ]
+
+  const getAccount = (id: string) => accounts.find((account) => account.id === id)
+
+  async function save() {
+    const nextErrors: Record<string, string> = {}
+    const value = Number(amount)
+
+    if (!value || value < 0) nextErrors.amount = 'Enter an amount greater than Rp0.'
+    if (!from) {
+      nextErrors.from =
+        kind === 'income'
+          ? 'Choose the account that receives the money.'
+          : 'Choose the source account.'
+    }
+
+    if (kind === 'transfer') {
+      if (!to) nextErrors.to = 'Choose the destination account.'
+      else if (to === from) nextErrors.to = 'Choose a different destination account.'
+    }
+
+    if (!date) nextErrors.date = 'Choose a date.'
+    else if (date > todayKey()) nextErrors.date = 'Date can’t be in the future.'
+
+    if (
+      !nextErrors.amount &&
+      !nextErrors.from &&
+      kind !== 'income' &&
+      (getAccount(from)?.balance ?? 0) < value
+    ) {
+      nextErrors.amount = `Not enough balance in ${getAccount(from)?.name ?? 'this account'}.`
+    }
+
+    setErrors(nextErrors)
+    if (Object.keys(nextErrors).length > 0) return
+
+    const description =
+      kind === 'transfer'
+        ? `Transfer ${getAccount(from)?.name} → ${getAccount(to)?.name}`
+        : note.trim() || `${category} ${kind}`
+
+    try {
+      await addTransaction({
+        kind,
+        amount: value,
+        date,
+        accountId: from,
+        toAccountId: kind === 'transfer' ? to : undefined,
+        category: kind === 'transfer' ? TRANSFER_CATEGORY : category,
+        description,
+        note: note.trim(),
+      })
+      onClose()
+    } catch (error) {
+      setErrors({
+        submit: error instanceof Error ? error.message : 'Could not save transaction.',
+      })
+    }
+  }
+
+  const categories = kind === 'expense' ? EXPENSE_CATEGORIES : INCOME_CATEGORIES
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={TRANSACTION_COPY[kind].title}
+      actions={
+        <>
+          <Button variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button onClick={save}>{TRANSACTION_COPY[kind].action}</Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        {kind === 'transfer' && (
+          <div className="flex gap-2 rounded border border-border bg-indigo-light p-3 text-xs text-secondary dark:text-foreground">
+            <Icon name="info" size={14} className="mt-px shrink-0" />
+            <p>
+              Transfers between your own accounts don’t count as income or
+              expenses.
+            </p>
+          </div>
+        )}
+
+        <MoneyInput
+          label="Amount"
+          value={amount}
+          onChange={setAmount}
+          error={errors.amount}
+        />
+
+        <Select
+          label={kind === 'income' ? 'Destination account' : 'Source account'}
+          value={from}
+          onChange={(event) => setFrom(event.target.value)}
+          options={accountOptions}
+        />
+        {errors.from && (
+          <p role="alert" className="text-xs text-destructive">
+            {errors.from}
+          </p>
+        )}
+
+        {kind === 'transfer' && (
+          <>
+            <Select
+              label="Destination account"
+              value={to}
+              onChange={(event) => setTo(event.target.value)}
+              options={accountOptions}
+            />
+            {errors.to && (
+              <p role="alert" className="text-xs text-destructive">
+                {errors.to}
+              </p>
+            )}
+          </>
+        )}
+
+        {kind !== 'transfer' && (
+          <Select
+            label="Category"
+            value={category}
+            onChange={(event) => setCategory(event.target.value)}
+            options={categories.map((item) => ({
+              value: item,
+              label: item,
+            }))}
+          />
+        )}
+
+        <Input
+          label="Date"
+          type="date"
+          max={todayKey()}
+          value={date}
+          error={errors.date}
+          onChange={(event) => setDate(event.target.value)}
+        />
+
+        <Note value={note} onChange={setNote} />
+
+        {errors.submit && (
+          <p role="alert" className="text-xs text-destructive">
+            {errors.submit}
+          </p>
+        )}
+      </div>
+    </Modal>
+  )
+}
+
+// ── Monthly budget ──────────────────────────────────────────────────────────
+
+export function BudgetModal({
+  open,
+  onClose,
+  budget,
+  onSave,
+}: {
+  open: boolean
+  onClose: () => void
+  budget: number | null
+  onSave: (value: number | null) => Promise<void>
+}) {
+  const [value, setValue] = useState('')
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (open) {
+      setValue(budget === null ? '' : String(budget))
+      setError('')
+    }
+  }, [open, budget])
+
+  async function save(nextValue: number | null) {
+    setSaving(true)
+    setError('')
+
+    try {
+      await onSave(nextValue)
+      onClose()
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error
+          ? saveError.message
+          : 'Could not save the budget.',
+      )
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Monthly budget"
+      actions={
+        <>
+          {budget !== null && (
+            <Button
+              variant="ghost"
+              className="mr-auto"
+              disabled={saving}
+              onClick={() => void save(null)}
+            >
+              Remove budget
+            </Button>
+          )}
+
+          <Button variant="outline" disabled={saving} onClick={onClose}>
+            Cancel
+          </Button>
+
+          <Button
+            disabled={saving}
+            onClick={() => {
+              const parsed = Number(value)
+              if (!value || !Number.isFinite(parsed) || parsed <= 0) {
+                setError('Enter a budget greater than Rp0.')
+                return
+              }
+              void save(parsed)
+            }}
+          >
+            {saving ? 'Saving…' : 'Save'}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <p className="text-xs text-muted-foreground">
+          Set a spending limit for each month. Transfers aren’t counted toward
+          the budget.
+        </p>
+
+        <MoneyInput
+          label="Budget limit"
+          value={value}
+          onChange={setValue}
+          error={error}
+        />
+      </div>
+    </Modal>
+  )
+}
