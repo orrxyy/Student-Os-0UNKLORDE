@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react'
+
 import bcaLogo from '../assets/finance/bca.png'
 import gopayLogo from '../assets/finance/gopay.png'
 import { useEffect, useSyncExternalStore } from 'react'
