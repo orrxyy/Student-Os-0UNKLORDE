@@ -108,18 +108,24 @@ export function FinancePage() {
         <p className="text-sm text-muted-foreground">Track your personal money: what you hold, earn, and spend.</p>
       </div>
 
-      <p className="text-xs rounded border border-border bg-muted px-3 py-2 text-muted-foreground">
-        {loading && (
-  <p role="status" className="text-xs text-muted-foreground">
-    Loading finance data…
-  </p>
-)}
-{error && (
-  <p role="alert" className="text-xs text-destructive">
-    Finance error: {error}
-  </p>
-)}
-      </p>
+      {loading && (
+        <p
+          role="status"
+          className="text-xs rounded border border-border bg-muted px-3 py-2 text-muted-foreground"
+        >
+          Loading finance data…
+        </p>
+      )}
+
+      {error && (
+        <p
+          role="alert"
+          className="text-xs rounded border border-destructive/40 bg-destructive/5 px-3 py-2 text-destructive"
+        >
+          Finance error: {error}
+        </p>
+      )}
+
 
       {/* Total assets */}
       <section aria-label="Total assets" className="relative overflow-hidden rounded-lg bg-secondary text-secondary-foreground p-5 sm:p-6">
@@ -353,22 +359,34 @@ export function FinancePage() {
         hasTransactions={!!accountModal?.account && transactions.some((t) => t.accountId === accountModal.account!.id || t.toAccountId === accountModal.account!.id)}
       />
       <BudgetModal open={budgetOpen} onClose={() => setBudgetOpen(false)} budget={budget} onSave={setBudget} />
-      <Modal
+            <Modal
         open={!!deleting}
         onClose={() => setDeleting(null)}
         title="Delete transaction?"
-        actions={<><Button variant="outline" onClick={() => setDeleting(null)}>Cancel</Button><Button variant="destructive" onClick={async () => {
-  if (!deleting) return
-  try {
-    await deleteTransaction(deleting.id)
-    setDeleting(null)
-  } catch {
-    // Pesan error akan tampil dari state `error` di halaman.
-  }
-}}
+        actions={
+          <>
+            <Button variant="outline" onClick={() => setDeleting(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={async () => {
+                if (!deleting) return
+                try {
+                  await deleteTransaction(deleting.id)
+                  setDeleting(null)
+                } catch {
+                  // Error ditampilkan lewat state error halaman.
+                }
+              }}
+            >
+              Delete
+            </Button>
+          </>
+        }
       >
-        <p className="text-sm">“{deleting?.description}” ({deleting && fmtIDR(deleting.amount)}) will be removed and the account balance reversed.</p>
+        <p className="text-sm">
+          “{deleting?.description}” (
+          {deleting && fmtIDR(deleting.amount)}) akan dihapus.
+        </p>
       </Modal>
-    </div>
-  )
-}
