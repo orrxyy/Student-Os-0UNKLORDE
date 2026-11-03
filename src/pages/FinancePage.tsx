@@ -390,3 +390,6 @@ export function FinancePage() {
           {deleting && fmtIDR(deleting.amount)}) akan dihapus.
         </p>
       </Modal>
+    </div>
+  )
+}
