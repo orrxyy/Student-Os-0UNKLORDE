@@ -99,10 +99,22 @@ export function scoreToGradePoint(score: number, scale: GradingScale): number {
 }
 
 /** Resolves the GPA point value for a single course — numeric finalScore takes precedence. */
+/** Resolves a course GPA point from its final score, entered letter grade,
+ * or current score when some grade components are still incomplete.
+ */
 function courseGradePoint(c: Course, scale: GradingScale): number | null {
-  const score = finalScore(c)
-  if (score !== null) return scoreToGradePoint(score, scale)
-  if (c.courseLetterGrade) return gradePointForLetter(c.courseLetterGrade, scale)
+  const final = finalScore(c)
+  if (final !== null) return scoreToGradePoint(final, scale)
+
+  if (c.courseLetterGrade) {
+    return gradePointForLetter(c.courseLetterGrade, scale)
+  }
+
+  const current = currentWeightedScore(c)
+  if (current !== null) {
+    return scoreToGradePoint(current, scale)
+  }
+
   return null
 }
 
