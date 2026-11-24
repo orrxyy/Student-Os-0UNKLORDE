@@ -32,14 +32,35 @@ function weightedGPA(courses: Course[], scale: GradingScale) {
   let pts = 0
   let sks = 0
   let n = 0
+
   for (const c of courses) {
-    const g = courseFinalGrade(c, scale)
-    if (!g) continue
-    pts += g.point * c.sks
+    // Gunakan nilai final atau nilai huruf jika sudah tersedia.
+    const final = courseFinalGrade(c, scale)
+
+    if (final) {
+      pts += final.point * c.sks
+      sks += c.sks
+      n++
+      continue
+    }
+
+    // Jika belum final, perkirakan dari komponen nilai yang sudah diisi.
+    const current = currentWeightedScore(c)
+    if (current === null) continue
+
+    const letter = letterGrade(current, scale)
+    const point = gradePointForLetter(letter, scale)
+
+    pts += point * c.sks
     sks += c.sks
     n++
   }
-  return { gpa: sks > 0 ? pts / sks : null, gradedSKS: sks, gradedCourses: n }
+
+  return {
+    gpa: sks > 0 ? pts / sks : null,
+    gradedSKS: sks,
+    gradedCourses: n,
+  }
 }
 
 export interface SemesterSummary {
